@@ -46,6 +46,8 @@ def parse_args():
     parser.add_argument('--render_mode', type=str, default='human',
                        choices=['human', 'rgb_array'],
                        help='渲染模式')
+    parser.add_argument('--render_delay', type=float, default=0.02,
+                       help='渲染延迟时间（秒）')
     
     # 分析参数
     parser.add_argument('--save_video', action='store_true',
@@ -106,7 +108,7 @@ class PPOTester:
         
         # 从检查点中获取观察空间和动作空间信息
         obs_shape = checkpoint.get('obs_shape', (Config.FRAME_STACK, Config.FRAME_SIZE, Config.FRAME_SIZE))
-        action_dim = checkpoint.get('action_dim', 7)
+        action_dim = 12
         
         # 模拟空间对象
         class MockObsSpace:
@@ -228,7 +230,7 @@ class PPOTester:
             # 渲染
             if self.args.render:
                 self.env.render()
-                time.sleep(0.02)  # 稍微减慢游戏速度以便观察
+                time.sleep(self.args.render_delay)  # 稍微减慢游戏速度以便观察
             
             # 更新统计
             episode_reward += reward

@@ -337,7 +337,7 @@ class PPOTrainer:
         
         # 创建单个环境用于评估（不渲染）
         from enviroments.mario_env import create_mario_environment
-        eval_env = create_mario_environment('1-1')
+        eval_env = create_mario_environment(Config.WORLD_STAGE)
         
         eval_rewards = []
         eval_lengths = []
