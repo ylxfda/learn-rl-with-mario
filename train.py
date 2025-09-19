@@ -34,7 +34,7 @@ def parse_args():
     # 环境参数
     parser.add_argument('--num_envs', type=int, default=Config.NUM_ENVS,
                        help='并行环境数量')
-    parser.add_argument('--worlds', nargs='+', default=['1-1', '1-2', '1-3', '1-4'],
+    parser.add_argument('--worlds', nargs='+', default=list(Config.WORLD_STAGE),
                        help='训练使用的关卡列表')
     parser.add_argument('--render_env', type=int, default=None,
                        help='需要渲染的环境ID（用于观察训练过程）')

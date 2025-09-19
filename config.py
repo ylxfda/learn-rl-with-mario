@@ -12,7 +12,7 @@ class Config:
     
     # 游戏环境配置
     ENV_NAME = 'SuperMarioBros-v0'              # 环境名称
-    WORLD_STAGE = ['1-2']         # 初始关卡
+    WORLD_STAGE = ['1-1', '1-2', '1-3', '1-4']  # 继续训练的关卡列表
 
     # 并行环境数量 - 影响训练速度和样本多样性
     NUM_ENVS = 48
