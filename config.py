@@ -1,125 +1,125 @@
 """
-配置文件 - 包含所有超参数和系统设置
-这种集中式配置方便调试和后续添加其他算法
+Configuration file for hyperparameters and system settings.
+Centralized config simplifies tuning and adding new algorithms.
 """
 
 import torch
 
 class Config:
     # =============================================================================
-    # 环境设置
+    # Environment settings
     # =============================================================================
     
-    # 游戏环境配置
-    ENV_NAME = 'SuperMarioBros-v0'              # 环境名称
-    WORLD_STAGE = ['1-1', '1-2', '1-3', '1-4']  # 训练/评估的关卡列表
+    # Gym environment
+    ENV_NAME = 'SuperMarioBros-v0'              # environment id
+    WORLD_STAGE = ['1-1', '1-2', '1-3', '1-4']  # worlds to train/evaluate on
     
-    # 多关卡动态采样控制
-    DYNAMIC_WORLD_SAMPLING = False   # 是否在单环境内按权重切换关卡（默认关闭）
-    USE_DYNAMIC_WORLD_COUNTS = True  # 是否通过调整各关卡子环境数量来动态采样
-    WORLD_SAMPLING_MIN_WEIGHT = 0.05 # 每个关卡的最小采样权重占比
-    WORLD_SAMPLING_ALPHA = 1.0       # 权重放大系数（对差异的敏感度）
-    WORLD_SWITCH_PROB = 1.0          # 多世界环境在reset时切换关卡的概率（仅当 DYNAMIC_WORLD_SAMPLING=True 时有效）
-    WORLD_MIN_ENVS_PER_WORLD = 1     # 动态分配时每个关卡的最少子环境数（避免完全遗忘）
+    # Multi-world dynamic sampling controls
+    DYNAMIC_WORLD_SAMPLING = False   # re-sample world with weights inside single env
+    USE_DYNAMIC_WORLD_COUNTS = True  # allocate per-world env counts dynamically
+    WORLD_SAMPLING_MIN_WEIGHT = 0.05 # minimum sampling weight per world
+    WORLD_SAMPLING_ALPHA = 1.0       # amplification factor (sensitivity to difficulty)
+    WORLD_SWITCH_PROB = 1.0          # switch probability on reset (only when DYNAMIC_WORLD_SAMPLING=True)
+    WORLD_MIN_ENVS_PER_WORLD = 1     # min sub-envs per world to avoid forgetting
 
-    # 并行环境数量 - 影响训练速度和样本多样性
+    # Number of parallel envs — impacts speed/diversity
     NUM_ENVS = 48
     
-    # 图像预处理参数
-    FRAME_SIZE = 84                 # 缩放后的图像尺寸 (84x84)
-    FRAME_STACK = 4                 # 堆叠帧数，用于提供时序信息
-    SKIP_FRAMES = 4                 # 动作重复次数，减少计算量
+    # Preprocessing
+    FRAME_SIZE = 84                 # resized image (84x84)
+    FRAME_STACK = 4                 # number of stacked frames (temporal info)
+    SKIP_FRAMES = 4                 # action repeat to reduce compute
     
     # =============================================================================
-    # PPO算法超参数
+    # PPO hyperparameters
     # =============================================================================
     
-    # 学习率
-    LEARNING_RATE = 3.0e-4          # Adam优化器学习率
+    # Learning rate
+    LEARNING_RATE = 3.0e-4          # Adam LR
     
-    # PPO核心参数
-    PPO_EPOCHS = 10                 # 每次更新时的PPO迭代次数
-    CLIP_EPSILON = 0.1              # PPO裁剪参数，控制策略更新幅度
-    VALUE_LOSS_COEFF = 0.5          # 价值函数损失系数
-    ENTROPY_COEFF = 0.1            # 熵奖励系数，鼓励探索
+    # Core PPO params
+    PPO_EPOCHS = 10                 # epochs per update
+    CLIP_EPSILON = 0.1              # clipping for policy/value
+    VALUE_LOSS_COEFF = 0.5          # value loss coefficient
+    ENTROPY_COEFF = 0.1            # entropy coefficient (exploration)
     
-    # 折扣和优势计算
-    GAMMA = 0.95                    # 折扣因子
-    GAE_LAMBDA = 0.95               # GAE(Generalized Advantage Estimation)参数
+    # Discount and advantages
+    GAMMA = 0.95                    # discount factor
+    GAE_LAMBDA = 0.95               # GAE lambda
     
-    # 训练批次设置
-    STEPS_PER_UPDATE = 2048         # 每次更新前收集的步数
-    MINIBATCH_SIZE = 8192            # PPO更新时的小批次大小
+    # Batch settings
+    STEPS_PER_UPDATE = 2048         # steps collected per update
+    MINIBATCH_SIZE = 8192           # minibatch size for PPO update
     
-    # 梯度裁剪
-    MAX_GRAD_NORM = 0.8             # 梯度裁剪阈值，防止梯度爆炸
+    # Gradient clipping
+    MAX_GRAD_NORM = 0.8             # clip threshold (stability)
 
-    # 若干回合没有改进就可以考虑停止
+    # Early-stop patience (episodes without improvement)
     PATIENCE = 1e10  
     
     # =============================================================================
-    # 网络架构参数
+    # Network architecture
     # =============================================================================
     
-    # CNN特征提取器
-    CNN_CHANNELS = [32, 64, 64]     # 卷积层通道数
-    CNN_KERNELS = [8, 4, 3]         # 卷积核大小
-    CNN_STRIDES = [4, 2, 1]         # 卷积步长
+    # CNN feature extractor
+    CNN_CHANNELS = [32, 64, 64]     # channels
+    CNN_KERNELS = [8, 4, 3]         # kernel sizes
+    CNN_STRIDES = [4, 2, 1]         # strides
     
-    # 全连接层
-    HIDDEN_SIZE = 512               # 隐藏层大小
-    
-    # =============================================================================
-    # 训练设置
-    # =============================================================================
-    
-    # 训练轮次和保存
-    MAX_EPISODES = 10000000000            # 最大训练回合数
-    MAX_STEPS = 10000000000000            # 最大训练步数
-    SAVE_FREQ = 100                 # 每多少次更新保存一次模型
-    LOG_FREQ = 10                   # 每多少次更新记录一次日志
-    
-    # 早停条件 - 当平均奖励达到此值时认为训练成功
-    TARGET_REWARD = 3000            # 马里奥游戏的目标奖励
+    # Fully-connected
+    HIDDEN_SIZE = 512               # hidden size
     
     # =============================================================================
-    # 系统设置
+    # Training settings
     # =============================================================================
     
-    # 设备设置
+    # Limits and intervals
+    MAX_EPISODES = 10000000000      # max episodes
+    MAX_STEPS = 10000000000000      # max steps
+    SAVE_FREQ = 100                 # save every N updates
+    LOG_FREQ = 10                   # log every N updates
+    
+    # Target reward for early success
+    TARGET_REWARD = 3000            # Mario target reward
+    
+    # =============================================================================
+    # System settings
+    # =============================================================================
+    
+    # Device
     DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    # 随机种子
+    # Seed
     SEED = 42
     
-    # 文件路径
-    MODEL_DIR = 'models'            # 模型保存目录
-    LOG_DIR = 'logs'                # 日志保存目录
+    # Paths
+    MODEL_DIR = 'models'            # model directory
+    LOG_DIR = 'logs'                # log directory
     
-    # TensorBoard设置
-    TENSORBOARD_LOG = True          # 是否使用TensorBoard记录
-    
-    # =============================================================================
-    # 测试设置
-    # =============================================================================
-    
-    # 测试时的渲染设置
-    RENDER_MODE = 'human'           # 测试时的渲染模式
-    TEST_EPISODES = 5               # 测试回合数
+    # TensorBoard
+    TENSORBOARD_LOG = True          # enable TensorBoard logging
     
     # =============================================================================
-    # 调试选项
+    # Test settings
     # =============================================================================
     
-    # 详细输出
-    VERBOSE = True                  # 是否显示详细训练信息
+    # Rendering during test
+    RENDER_MODE = 'human'           # render mode for tests
+    TEST_EPISODES = 5               # default test episodes
     
-    # 性能监控
-    PROFILE_TRAINING = False        # 是否进行性能分析
+    # =============================================================================
+    # Debug options
+    # =============================================================================
+    
+    # Verbose output
+    VERBOSE = True                  # print more training info
+    
+    # Profiling
+    PROFILE_TRAINING = False        # enable training profiling
     
     @staticmethod
     def print_config():
-        """打印当前配置"""
+        """Print current configuration"""
         print("=" * 60)
         print("PPO Mario Training Configuration")
         print("=" * 60)

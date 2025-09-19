@@ -1,7 +1,7 @@
 """
-马里奥游戏环境模块
-封装了马里奥游戏环境，提供标准化的接口
-包括环境创建、状态预处理、奖励塑形等功能
+Mario environment module.
+Wrapper around gym-super-mario-bros providing standardized interfaces
+including environment creation, preprocessing, and reward shaping.
 """
 
 import gym
@@ -25,19 +25,19 @@ from config import Config
 
 class MarioEnvironment:
     """
-    马里奥环境封装类
+    Mario environment wrapper.
     
-    提供统一的接口来创建和管理马里奥游戏环境
-    支持不同的世界和关卡配置
+    Provides a unified interface to create and manage Mario
+    across different worlds/levels.
     """
     
     def __init__(self, world='1-1', render_mode=None):
         """
-        初始化马里奥环境
+        Initialize Mario environment.
         
         Args:
-            world (str): 世界-关卡，如 '1-1', '1-2', '2-1' 等
-            render_mode (str): 渲染模式，None表示不渲染，'human'表示显示窗口
+            world (str): world-level like '1-1'
+            render_mode (str): None for headless, 'human' to render
         """
         if not MARIO_AVAILABLE:
             raise ImportError("gym-super-mario-bros is required but not installed")
@@ -45,52 +45,52 @@ class MarioEnvironment:
         self.world = world
         self.render_mode = render_mode
         
-        # 创建环境
+        # Create environment
         self.env = self._create_env()
         
-        # 环境信息
+        # Spaces
         self.observation_space = self.env.observation_space
         self.action_space = self.env.action_space
         
-        # 统计信息
+        # Stats
         self.episode_count = 0
         self.total_steps = 0
         
     def _create_env(self):
         """
-        创建马里奥游戏环境
+        Create a Mario environment instance.
         
         Returns:
-            gym.Env: 配置好的马里奥环境
+            gym.Env: configured environment
         """
-        # 根据世界编号创建环境
+        # Build env name from world
         if '-' in self.world:
             world_num, level_num = self.world.split('-')
             env_name = f'SuperMarioBros-{world_num}-{level_num}-v0'
         else:
             env_name = f'SuperMarioBros-{self.world}-v0'
         
-        # 创建基础环境
+        # Create base env
         try:
             env = gym_super_mario_bros.make(env_name)
         except Exception as e:
             print(f"Failed to create environment {env_name}, using default SuperMarioBros-v0")
             env = gym_super_mario_bros.make('SuperMarioBros-v0')
         
-        # 复杂动作空间
+        # Complex action space
         env = JoypadSpace(env, COMPLEX_MOVEMENT)
         
-        # 应用我们的包装器进行预处理
+        # Apply preprocessing wrapper
         env = MarioWrapper(env)
         
         return env
     
     def reset(self):
         """
-        重置环境
+        Reset environment and return initial state.
         
         Returns:
-            np.array: 初始状态
+            np.array: initial state
         """
         state = self.env.reset()
         self.episode_count += 1
@@ -98,13 +98,13 @@ class MarioEnvironment:
     
     def step(self, action):
         """
-        执行一步动作
+        Perform one step.
         
         Args:
-            action (int): 要执行的动作
+            action (int): action to execute
             
         Returns:
-            tuple: (下一个状态, 奖励, 是否结束, 信息字典)
+            tuple: (next_state, reward, done, info)
         """
         next_state, reward, done, info = self.env.step(action)
         self.total_steps += 1
@@ -113,26 +113,26 @@ class MarioEnvironment:
     
     def render(self, mode='human'):
         """
-        渲染环境
+        Render environment.
         
         Args:
-            mode (str): 渲染模式
+            mode (str): render mode
         """
         return self.env.render(mode)
     
     def close(self):
         """
-        关闭环境
+        Close environment
         """
         self.env.close()
 
     def reconfigure_world(self, world: str, render_mode=None):
         """
-        重新配置到新的关卡（单世界环境）
+        Reconfigure to a new world (single-world env).
         
         Args:
-            world (str): 新的世界-关卡，如 '1-2'
-            render_mode (str): 渲染模式
+            world (str): new world-level like '1-2'
+            render_mode (str): render mode
         """
         try:
             if hasattr(self, 'env') and self.env is not None:
@@ -148,36 +148,36 @@ class MarioEnvironment:
     
     def get_action_meanings(self):
         """
-        获取动作的含义
+        Get action meanings.
         
         Returns:
-            list: 动作含义列表
+            list: action meaning list
         """
         return [
-            'NOOP',           # 0: 无操作
-            'right',          # 1: 向右移动
-            'right_A',        # 2: 向右跳跃
-            'right_B',        # 3: 向右跑
-            'right_A_B',      # 4: 向右跑跳
-            'A',              # 5: 原地跳跃
-            'left'            # 6: 向左移动
+            'NOOP',           # 0: no-op
+            'right',          # 1: move right
+            'right_A',        # 2: right + A (jump)
+            'right_B',        # 3: right + B (run)
+            'right_A_B',      # 4: right + A + B (run jump)
+            'A',              # 5: jump
+            'left'            # 6: move left
         ]
     
     def get_random_action(self):
         """
-        获取随机动作
+        Sample a random action.
         
         Returns:
-            int: 随机动作
+            int: random action
         """
         return self.action_space.sample()
     
     def get_info(self):
         """
-        获取环境信息
+        Get environment info snapshot.
         
         Returns:
-            dict: 环境信息
+            dict: info dict
         """
         return {
             'world': self.world,
@@ -191,44 +191,44 @@ class MarioEnvironment:
 
 class MultiWorldMarioEnvironment(MarioEnvironment):
     """
-    多世界马里奥环境
+    Multi-world Mario environment.
     
-    支持在不同关卡之间切换，增加训练的多样性
+    Supports switching between worlds to increase training diversity.
     """
     
     def __init__(self, worlds=['1-1', '1-2', '1-3'], render_mode=None, random_start=True, world_weights=None):
         """
-        初始化多世界环境
+        Initialize multi-world environment.
         
         Args:
-            worlds (list): 可用的世界关卡列表
-            render_mode (str): 渲染模式
-            random_start (bool): 是否随机选择起始关卡
+            worlds (list): available worlds
+            render_mode (str): render mode
+            random_start (bool): randomly select starting world
         """
         self.worlds = worlds
         self.current_world_idx = 0
         self.random_start = random_start
-        # 切换概率（来自配置以便统一控制）
+        # Switch probability (from config)
         self.switch_prob = getattr(Config, 'WORLD_SWITCH_PROB', 1.0)
         
-        # 采样权重
+        # Sampling weights
         self.world_weights = None
         self.set_world_weights(world_weights)
         
-        # 如果随机开始，选择一个随机关卡
+        # If random start, pick a random world index
         if random_start:
             self.current_world_idx = np.random.randint(len(worlds))
         
-        # 初始化当前世界
+        # Initialize base class with current world
         super().__init__(worlds[self.current_world_idx], render_mode)
         
-        # 世界切换统计
+        # Per-world stats
         self.world_episode_counts = {world: 0 for world in worlds}
         self.world_success_counts = {world: 0 for world in worlds}
 
     def _normalized_weights(self):
         if self.world_weights is None:
-            # 默认均匀分布
+            # Default uniform
             return np.ones(len(self.worlds)) / len(self.worlds)
         w = np.array(self.world_weights, dtype=np.float64)
         w = np.clip(w, 1e-8, None)
@@ -237,13 +237,13 @@ class MultiWorldMarioEnvironment(MarioEnvironment):
 
     def set_world_weights(self, weights):
         """
-        设置/更新各关卡的采样权重
+        Set/update sampling weights per world.
         
         Args:
             weights (list|dict|None):
-                - list/ndarray: 按 self.worlds 顺序的权重
+                - list/ndarray: weights in self.worlds order
                 - dict: {world: weight}
-                - None: 使用均匀分布
+                - None: uniform weights
         """
         if weights is None:
             self.world_weights = None
@@ -255,13 +255,13 @@ class MultiWorldMarioEnvironment(MarioEnvironment):
 
     def switch_world(self, world_idx=None):
         """
-        切换到指定世界
+        Switch to a target world.
         
         Args:
-            world_idx (int): 世界索引，None表示随机选择
+            world_idx (int): world index; None to sample by weights
         """
         if world_idx is None:
-            # 按权重采样关卡
+            # Sample by weights
             probs = self._normalized_weights()
             world_idx = int(np.random.choice(len(self.worlds), p=probs))
         
@@ -269,48 +269,48 @@ class MultiWorldMarioEnvironment(MarioEnvironment):
             self.current_world_idx = world_idx
             self.world = self.worlds[world_idx]
             
-            # 重新创建环境
+            # Recreate env
             self.env.close()
             self.env = self._create_env()
             
-            # print(f"切换到世界: {self.world}")
+            # print(f"Switched to world: {self.world}")
     
     def reset(self, switch_world=None):
         """
-        重置环境，可选择切换世界
+        Reset environment, optionally switching world.
         
         Args:
-            switch_world (bool): 是否在重置时切换世界
+            switch_world (bool): switch world at reset
             
         Returns:
-            np.array: 初始状态
+            np.array: initial state
         """
-        # 决定是否切换世界
+        # Decide whether to switch world
         if switch_world is None:
             switch_world = self.random_start
         
-        # 根据配置的概率按权重切换世界（默认每回合都按权重选择）
+        # With probability, re-sample world by weights
         if switch_world and np.random.random() < self.switch_prob:
             self.switch_world()
         
-        # 更新当前世界的回合计数
+        # Update per-world episode count
         self.world_episode_counts[self.world] += 1
         
         return super().reset()
     
     def step(self, action):
         """
-        执行动作，记录成功统计
+        Step and record success stats.
         
         Args:
-            action (int): 动作
+            action (int): action
             
         Returns:
-            tuple: 状态转移结果
+            tuple: transition result
         """
         next_state, reward, done, info = super().step(action)
         
-        # 记录成功（通关）
+        # Record success (flag)
         if done and info.get('flag_get', False):
             self.world_success_counts[self.world] += 1
         
@@ -318,10 +318,10 @@ class MultiWorldMarioEnvironment(MarioEnvironment):
     
     def get_world_statistics(self):
         """
-        获取各世界的统计信息
+        Get per-world statistics.
         
         Returns:
-            dict: 世界统计信息
+            dict: statistics
         """
         stats = {}
         for world in self.worlds:
@@ -339,10 +339,10 @@ class MultiWorldMarioEnvironment(MarioEnvironment):
     
     def get_info(self):
         """
-        获取多世界环境信息
+        Get multi-world env info.
         
         Returns:
-            dict: 环境信息
+            dict: info
         """
         info = super().get_info()
         info.update({
@@ -355,20 +355,20 @@ class MultiWorldMarioEnvironment(MarioEnvironment):
 
 def create_mario_environment(world='1-1', multi_world=False, worlds=None, render_mode=None, world_weights=None):
     """
-    马里奥环境创建工厂函数
+    Factory function to create a Mario environment.
     
     Args:
-        world (str): 单一世界模式下的世界编号
-        multi_world (bool): 是否使用多世界模式
-        worlds (list): 多世界模式下的世界列表
-        render_mode (str): 渲染模式
+        world (str): world id for single-world mode
+        multi_world (bool): enable multi-world mode
+        worlds (list): list of worlds for multi-world mode
+        render_mode (str): render mode
         
     Returns:
-        MarioEnvironment: 创建的马里奥环境
+        MarioEnvironment: environment instance
     """
     if multi_world:
         if worlds is None:
-            # 默认的多世界配置
+            # Default multi-world configuration
             worlds = ['1-1', '1-2', '1-3', '1-4']
         return MultiWorldMarioEnvironment(worlds, render_mode, random_start=True, world_weights=world_weights)
     else:
@@ -377,38 +377,38 @@ def create_mario_environment(world='1-1', multi_world=False, worlds=None, render
 
 def test_mario_environment():
     """
-    测试马里奥环境是否工作正常
+    Quick test to verify environment setup.
     """
-    print("测试马里奥环境...")
+    print("Testing Mario environment...")
     
     if not MARIO_AVAILABLE:
         print("Mario environment not available, skipping test")
         return
     
     try:
-        # 创建环境
+        # Create env
         env = create_mario_environment('1-1')
-        print(f"环境创建成功: {env.get_info()}")
+        print(f"Environment created: {env.get_info()}")
         
-        # 测试重置
+        # Reset
         state = env.reset()
-        print(f"重置成功，状态形状: {state.shape}")
+        print(f"Reset OK, state shape: {state.shape}")
         
-        # 测试几步
+        # Step a few times
         for i in range(5):
             action = env.get_random_action()
             next_state, reward, done, info = env.step(action)
-            print(f"步骤 {i+1}: 动作={action}, 奖励={reward:.2f}, 结束={done}")
+            print(f"Step {i+1}: action={action}, reward={reward:.2f}, done={done}")
             
             if done:
                 break
         
-        # 关闭环境
+        # Close
         env.close()
-        print("环境测试完成")
+        print("Environment test completed")
         
     except Exception as e:
-        print(f"环境测试失败: {e}")
+        print(f"Environment test failed: {e}")
 
 
 if __name__ == "__main__":

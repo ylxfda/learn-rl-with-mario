@@ -1,3 +1,3 @@
-# Environments模块初始化文件
+# Environments package init file
 from .mario_env import *
 from .parallel_envs import *

@@ -1,10 +1,10 @@
 """
-训练日志记录模块
-负责记录训练过程中的各种指标，包括：
-- 奖励曲线
-- 损失函数值
-- 训练统计信息
-- TensorBoard可视化
+Training logger module.
+Responsible for recording training metrics, including:
+- Reward curves
+- Loss values
+- Training statistics
+- TensorBoard visualization
 """
 
 import os
@@ -26,91 +26,91 @@ from config import Config
 
 class TrainingLogger:
     """
-    训练日志记录器
+    Training logger.
     
-    功能：
-    1. 记录训练过程中的各种指标
-    2. 计算滑动平均值
-    3. 保存训练日志到文件
-    4. TensorBoard可视化支持
-    5. 性能统计
+    Features:
+    1) Record metrics during training
+    2) Compute moving averages
+    3) Save logs to file
+    4) TensorBoard support
+    5) System performance stats
     """
     
     def __init__(self, log_dir=None, experiment_name=None):
         """
-        初始化日志记录器
+        Initialize logger.
         
         Args:
-            log_dir (str): 日志保存目录
-            experiment_name (str): 实验名称
+            log_dir (str): directory to save logs
+            experiment_name (str): experiment name
         """
-        # 设置日志目录
+        # Choose base log directory
         if log_dir is None:
             log_dir = Config.LOG_DIR
         
-        # 创建实验特定的日志目录
+        # Create experiment-specific log directory
         if experiment_name is None:
             experiment_name = f"mario_ppo_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         
         self.log_dir = os.path.join(log_dir, experiment_name)
         os.makedirs(self.log_dir, exist_ok=True)
         
-        # 初始化TensorBoard写入器
+        # Initialize TensorBoard writer
         self.tensorboard_writer = None
         if Config.TENSORBOARD_LOG and TENSORBOARD_AVAILABLE:
             self.tensorboard_writer = SummaryWriter(self.log_dir)
         
-        # 训练指标存储
+        # Metric storage
         self.metrics = defaultdict(list)
         self.episode_metrics = defaultdict(list)
         
-        # 滑动平均计算器（用于平滑曲线显示）
+        # Moving averages (for smoothing plots)
         self.running_averages = defaultdict(lambda: deque(maxlen=100))
         
-        # 训练统计
+        # Training counters
         self.start_time = time.time()
         self.episode_count = 0
         self.step_count = 0
         self.update_count = 0
         
-        # 最佳性能记录
+        # Best performance tracking
         self.best_reward = float('-inf')
         self.best_episode = 0
         
-        print(f"日志将保存到: {self.log_dir}")
+        print(f"Logs will be saved to: {self.log_dir}")
         
     def log_episode(self, episode_reward, episode_length, info=None):
         """
-        记录回合结束时的信息
+        Log episode-end information.
         
         Args:
-            episode_reward (float): 回合总奖励
-            episode_length (int): 回合长度（步数）
-            info (dict): 额外的游戏信息
+            episode_reward (float): total return
+            episode_length (int): episode length (steps)
+            info (dict): additional game info
         """
         self.episode_count += 1
         
-        # 记录基本指标
+        # Basic metrics
         self.episode_metrics['reward'].append(episode_reward)
         self.episode_metrics['length'].append(episode_length)
         
-        # 更新滑动平均
+        # Update moving averages
         self.running_averages['reward'].append(episode_reward)
         self.running_averages['length'].append(episode_length)
         
-        # 记录游戏特定信息
+        # Log game-specific scalars
         if info:
             for key, value in info.items():
                 if isinstance(value, (int, float)):
                     self.episode_metrics[key].append(value)
                     self.running_averages[key].append(value)
         
-        # 更新最佳性能
+        # Update best-so-far
         if episode_reward > self.best_reward:
             self.best_reward = episode_reward
             self.best_episode = self.episode_count
         
-        # TensorBoard记录
+        # TensorBoard
         if self.tensorboard_writer:
             self.tensorboard_writer.add_scalar('Episode/Reward', episode_reward, self.episode_count)
             self.tensorboard_writer.add_scalar('Episode/Length', episode_length, self.episode_count)
@@ -123,10 +123,10 @@ class TrainingLogger:
     
     def log_training_step(self, **metrics):
         """
-        记录训练步骤中的指标
+        Record metrics during a training step.
         
         Args:
-            **metrics: 各种训练指标（loss, learning_rate等）
+            **metrics: training metrics (loss, learning_rate, etc.)
         """
         self.step_count += 1
         
@@ -134,16 +134,16 @@ class TrainingLogger:
             if isinstance(value, (int, float, np.floating, np.integer)):
                 self.metrics[key].append(float(value))
                 
-                # TensorBoard记录
+                # TensorBoard
                 if self.tensorboard_writer:
                     self.tensorboard_writer.add_scalar(f'Training/{key}', value, self.step_count)
     
     def log_update(self, **metrics):
         """
-        记录PPO更新时的指标
+        Record metrics at PPO update time.
         
         Args:
-            **metrics: PPO相关指标（policy_loss, value_loss, entropy等）
+            **metrics: PPO metrics (policy_loss, value_loss, entropy, ...)
         """
         self.update_count += 1
         
@@ -151,16 +151,16 @@ class TrainingLogger:
             if isinstance(value, (int, float, np.floating, np.integer)):
                 self.metrics[f'update_{key}'].append(float(value))
                 
-                # TensorBoard记录
+                # TensorBoard
                 if self.tensorboard_writer:
                     self.tensorboard_writer.add_scalar(f'Update/{key}', value, self.update_count)
     
     def log_system_info(self, **info):
         """
-        记录系统信息（内存使用、GPU利用率等）
+        Record system info (memory, GPU usage, etc.).
         
         Args:
-            **info: 系统信息字典
+            **info: system info dict
         """
         if self.tensorboard_writer:
             for key, value in info.items():
@@ -169,14 +169,14 @@ class TrainingLogger:
     
     def get_recent_average(self, metric_name, window=100):
         """
-        获取指定指标的近期平均值
+        Get moving average of a metric.
         
         Args:
-            metric_name (str): 指标名称
-            window (int): 平均窗口大小
+            metric_name (str): metric name
+            window (int): averaging window
             
         Returns:
-            float: 平均值，如果数据不足则返回None
+            float: average or None
         """
         if metric_name in self.running_averages and len(self.running_averages[metric_name]) > 0:
             return np.mean(list(self.running_averages[metric_name])[-window:])
@@ -184,7 +184,7 @@ class TrainingLogger:
     
     def print_training_stats(self):
         """
-        打印训练统计信息
+        Print training statistics.
         """
         if self.episode_count == 0:
             return
@@ -192,21 +192,21 @@ class TrainingLogger:
         current_time = time.time()
         elapsed_time = current_time - self.start_time
         
-        # 计算各种平均值
+        # Compute averages
         avg_reward = self.get_recent_average('reward', 100)
         avg_length = self.get_recent_average('length', 100)
         
         print(f"\n{'='*60}")
-        print(f"训练统计 (回合 {self.episode_count})")
+        print(f"Training Stats (episode {self.episode_count})")
         print(f"{'='*60}")
-        print(f"运行时间: {elapsed_time/3600:.2f} 小时")
-        print(f"总步数: {self.step_count:,}")
-        print(f"总更新次数: {self.update_count}")
-        print(f"最近100回合平均奖励: {avg_reward:.2f}" if avg_reward else "平均奖励: N/A")
-        print(f"最近100回合平均长度: {avg_length:.1f}" if avg_length else "平均长度: N/A")
-        print(f"最佳奖励: {self.best_reward:.2f} (回合 {self.best_episode})")
+        print(f"Elapsed: {elapsed_time/3600:.2f} hours")
+        print(f"Total steps: {self.step_count:,}")
+        print(f"Total updates: {self.update_count}")
+        print(f"Avg reward (last 100): {avg_reward:.2f}" if avg_reward else "Avg reward: N/A")
+        print(f"Avg length (last 100): {avg_length:.1f}" if avg_length else "Avg length: N/A")
+        print(f"Best reward: {self.best_reward:.2f} (episode {self.best_episode})")
         
-        # 显示最近的损失信息
+        # Show recent losses
         recent_losses = ['update_policy_loss', 'update_value_loss', 'update_total_loss']
         for loss_name in recent_losses:
             if loss_name in self.metrics and self.metrics[loss_name]:
@@ -218,7 +218,7 @@ class TrainingLogger:
     
     def save_training_log(self):
         """
-        保存训练日志到JSON文件
+        Save training log to JSON file.
         """
         log_data = {
             'experiment_info': {
@@ -240,42 +240,42 @@ class TrainingLogger:
             }
         }
         
-        # 保存到JSON文件
+        # Save to JSON file
         log_file = os.path.join(self.log_dir, 'training_log.json')
         with open(log_file, 'w') as f:
             json.dump(log_data, f, indent=2)
         
-        print(f"训练日志已保存到: {log_file}")
+        print(f"Training log saved to: {log_file}")
     
     def close(self):
         """
-        关闭日志记录器，清理资源
+        Close the logger and cleanup resources.
         """
         if self.tensorboard_writer:
             self.tensorboard_writer.close()
         
-        # 保存最终日志
+        # Save final log
         self.save_training_log()
         
     def __del__(self):
         """
-        析构函数，确保资源被正确清理
+        Ensure resources are cleaned up.
         """
         self.close()
 
 
 class PerformanceMonitor:
     """
-    性能监控器 - 监控训练过程中的系统资源使用情况
+    Performance monitor for system resource usage during training.
     """
     
     def __init__(self):
         """
-        初始化性能监控器
+        Initialize performance monitor.
         """
         self.gpu_available = False
         
-        # 尝试导入GPU监控工具
+        # Try enabling GPU monitoring
         try:
             import torch
             if torch.cuda.is_available():
@@ -286,10 +286,10 @@ class PerformanceMonitor:
     
     def get_gpu_memory_usage(self):
         """
-        获取GPU内存使用情况
+        Get GPU memory usage.
         
         Returns:
-            dict: GPU内存使用信息
+            dict: GPU memory info
         """
         if not self.gpu_available:
             return {}
@@ -308,17 +308,17 @@ class PerformanceMonitor:
     
     def get_system_info(self):
         """
-        获取系统信息
+        Get system info.
         
         Returns:
-            dict: 系统资源使用信息
+            dict: resource usage info
         """
         import psutil
         
-        # CPU使用率
+        # CPU usage
         cpu_percent = psutil.cpu_percent(interval=1)
         
-        # 内存使用情况
+        # Memory usage
         memory = psutil.virtual_memory()
         memory_percent = memory.percent
         memory_used_gb = memory.used / 1024**3
@@ -329,7 +329,7 @@ class PerformanceMonitor:
             'memory_used_gb': memory_used_gb,
         }
         
-        # 添加GPU信息
+        # Add GPU info
         system_info.update(self.get_gpu_memory_usage())
         
         return system_info
@@ -337,16 +337,16 @@ class PerformanceMonitor:
 
 class ProgressTracker:
     """
-    训练进度跟踪器 - 跟踪训练目标完成情况
+    Training progress tracker.
     """
     
     def __init__(self, target_reward=3000, patience=100):
         """
-        初始化进度跟踪器
+        Initialize.
         
         Args:
-            target_reward (float): 目标奖励值
-            patience (int): 早停耐心值（多少回合没有改进就停止）
+            target_reward (float): target average reward
+            patience (int): early-stop patience in episodes
         """
         self.target_reward = target_reward
         self.patience = patience
@@ -355,35 +355,35 @@ class ProgressTracker:
         self.episodes_without_improvement = 0
         self.target_achieved = False
         
-        self.reward_history = deque(maxlen=100)  # 保存最近100回合的奖励
+        self.reward_history = deque(maxlen=100)  # last 100 episode rewards
     
     def update(self, episode_reward):
         """
-        更新进度跟踪
+        Update tracker with a new episode.
         
         Args:
-            episode_reward (float): 当前回合奖励
+            episode_reward (float): reward for the episode
             
         Returns:
-            dict: 跟踪信息
+            dict: tracking info
         """
         self.reward_history.append(episode_reward)
         
-        # 计算最近100回合的平均奖励
-        if len(self.reward_history) >= 10:  # 至少10回合才开始计算
+        # Compute moving average once enough data collected
+        if len(self.reward_history) >= 10:
             avg_reward = np.mean(self.reward_history)
             
-            # 检查是否有改进
+            # Check improvement
             if avg_reward > self.best_avg_reward:
                 self.best_avg_reward = avg_reward
                 self.episodes_without_improvement = 0
             else:
                 self.episodes_without_improvement += 1
             
-            # 检查是否达到目标
+            # Check if target achieved
             if avg_reward >= self.target_reward and not self.target_achieved:
                 self.target_achieved = True
-                print(f"\n🎉 目标达成！平均奖励 {avg_reward:.2f} 超过目标 {self.target_reward}")
+                print(f"\n🎉 Target achieved! Avg reward {avg_reward:.2f} >= {self.target_reward}")
         
         return {
             'avg_reward': np.mean(self.reward_history) if self.reward_history else 0,

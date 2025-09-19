@@ -1,7 +1,7 @@
 """
-强化学习算法基类
-定义了所有RL算法的通用接口和基础功能
-为后续实现DQN等其他算法提供统一的框架
+Base classes for Reinforcement Learning algorithms.
+Defines common interfaces and utilities shared by RL algorithms
+to provide a unified framework for implementing variants (e.g., DQN, A2C, PPO).
 """
 
 from abc import ABC, abstractmethod
@@ -16,13 +16,13 @@ from utils.logger import TrainingLogger
 
 class BaseRLAlgorithm(ABC):
     """
-    强化学习算法抽象基类
+    Abstract base class for RL algorithms.
     
-    定义了所有RL算法必须实现的接口：
-    1. 训练步骤
-    2. 动作选择
-    3. 模型保存和加载
-    4. 性能评估
+    Required interfaces:
+    1) update step
+    2) action selection
+    3) save/load model
+    4) performance reporting
     """
     
     def __init__(self, 
@@ -31,30 +31,30 @@ class BaseRLAlgorithm(ABC):
                  device=None,
                  logger=None):
         """
-        初始化基类
+        Initialize base class state.
         
         Args:
-            observation_space: 观察空间
-            action_space: 动作空间
-            device (torch.device): 计算设备
-            logger (TrainingLogger): 日志记录器
+            observation_space: Observation space
+            action_space: Action space
+            device (torch.device): Compute device
+            logger (TrainingLogger): Logger instance
         """
         self.observation_space = observation_space
         self.action_space = action_space
         self.device = device if device else Config.DEVICE
         self.logger = logger
         
-        # 训练状态
+        # Training state
         self.training = True
         self.total_steps = 0
         self.total_episodes = 0
         self.total_updates = 0
         
-        # 性能指标
+        # Performance metrics
         self.best_reward = float('-inf')
         self.recent_rewards = []
         
-        # 网络和优化器（由子类实现）
+        # Networks and optimizers (set by subclasses)
         self.networks = {}
         self.optimizers = {}
         
@@ -66,13 +66,13 @@ class BaseRLAlgorithm(ABC):
     @abstractmethod
     def update(self, batch_data: Dict[str, torch.Tensor]) -> Dict[str, float]:
         """
-        执行一次网络参数更新
+        Run one optimization step.
         
         Args:
-            batch_data (dict): 批次数据，包含状态、动作、奖励等
+            batch_data (dict): Mini-batch of training data (states/actions/rewards/etc.)
             
         Returns:
-            dict: 更新统计信息（损失值等）
+            dict: Update statistics (e.g., losses)
         """
         pass
     
@@ -81,40 +81,40 @@ class BaseRLAlgorithm(ABC):
             observations: torch.Tensor, 
             deterministic: bool = False) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """
-        根据观察选择动作
+        Select actions given observations.
         
         Args:
-            observations (torch.Tensor): 观察
-            deterministic (bool): 是否选择确定性动作
+            observations (torch.Tensor): Observations
+            deterministic (bool): Whether to act deterministically
             
         Returns:
-            tuple: (动作, 额外信息字典)
+            tuple: (actions, extra_info)
         """
         pass
     
     @abstractmethod
     def save_model(self, filepath: str) -> None:
         """
-        保存模型参数
+        Save model parameters to file.
         
         Args:
-            filepath (str): 保存路径
+            filepath (str): Destination path
         """
         pass
     
     @abstractmethod
     def load_model(self, filepath: str) -> None:
         """
-        加载模型参数
+        Load model parameters from file.
         
         Args:
-            filepath (str): 模型文件路径
+            filepath (str): Model file path
         """
         pass
     
     def train(self):
         """
-        设置为训练模式
+        Set training mode.
         """
         self.training = True
         for network in self.networks.values():
@@ -123,7 +123,7 @@ class BaseRLAlgorithm(ABC):
     
     def eval(self):
         """
-        设置为评估模式
+        Set evaluation mode.
         """
         self.training = False
         for network in self.networks.values():
@@ -132,10 +132,10 @@ class BaseRLAlgorithm(ABC):
     
     def get_network_info(self) -> Dict[str, Any]:
         """
-        获取网络信息
+        Get network parameter statistics.
         
         Returns:
-            dict: 网络信息字典
+            dict: Network info
         """
         info = {}
         for name, network in self.networks.items():
@@ -151,23 +151,23 @@ class BaseRLAlgorithm(ABC):
     
     def update_training_stats(self, episode_reward: float):
         """
-        更新训练统计信息
+        Update training statistics.
         
         Args:
-            episode_reward (float): 回合奖励
+            episode_reward (float): Episode return
         """
         self.total_episodes += 1
         self.recent_rewards.append(episode_reward)
         
-        # 保持最近100回合的奖励记录
+        # Keep last 100 episode rewards
         if len(self.recent_rewards) > 100:
             self.recent_rewards.pop(0)
         
-        # 更新最佳奖励
+        # Update best reward
         if episode_reward > self.best_reward:
             self.best_reward = episode_reward
         
-        # 记录到日志
+        # Log to external logger
         if self.logger:
             avg_reward = sum(self.recent_rewards) / len(self.recent_rewards)
             self.logger.log_training_step(
@@ -179,10 +179,10 @@ class BaseRLAlgorithm(ABC):
     
     def get_training_stats(self) -> Dict[str, Any]:
         """
-        获取训练统计信息
+        Get aggregated training statistics.
         
         Returns:
-            dict: 训练统计信息
+            dict: Training statistics
         """
         stats = {
             'total_steps': self.total_steps,
@@ -202,22 +202,22 @@ class BaseRLAlgorithm(ABC):
     
     def should_save_model(self, current_reward: float) -> bool:
         """
-        判断是否应该保存当前模型
+        Decide whether current model should be saved.
         
         Args:
-            current_reward (float): 当前平均奖励
+            current_reward (float): Current average reward
             
         Returns:
-            bool: 是否保存
+            bool: True if should save
         """
         return current_reward > self.best_reward
     
     def create_checkpoint(self) -> Dict[str, Any]:
         """
-        创建检查点数据
+        Create a checkpoint dict containing state.
         
         Returns:
-            dict: 检查点数据
+            dict: Checkpoint
         """
         checkpoint = {
             'algorithm_name': self.__class__.__name__,
@@ -225,19 +225,19 @@ class BaseRLAlgorithm(ABC):
             'total_episodes': self.total_episodes,
             'total_updates': self.total_updates,
             'best_reward': self.best_reward,
-            'recent_rewards': self.recent_rewards[-10:],  # 保存最近10个奖励
+            'recent_rewards': self.recent_rewards[-10:],  # keep last 10 rewards
             'config': {
                 'learning_rate': Config.LEARNING_RATE,
                 'device': str(self.device),
             }
         }
         
-        # 添加网络状态
+        # Add network state
         for name, network in self.networks.items():
             if hasattr(network, 'state_dict'):
                 checkpoint[f'{name}_state_dict'] = network.state_dict()
         
-        # 添加优化器状态
+        # Add optimizer state
         for name, optimizer in self.optimizers.items():
             if hasattr(optimizer, 'state_dict'):
                 checkpoint[f'{name}_optimizer_state_dict'] = optimizer.state_dict()
@@ -246,26 +246,26 @@ class BaseRLAlgorithm(ABC):
     
     def load_checkpoint(self, checkpoint: Dict[str, Any]):
         """
-        从检查点恢复状态
+        Restore state from checkpoint.
         
         Args:
-            checkpoint (dict): 检查点数据
+            checkpoint (dict): Checkpoint data
         """
-        # 恢复训练统计
+        # Restore training stats
         self.total_steps = checkpoint.get('total_steps', 0)
         self.total_episodes = checkpoint.get('total_episodes', 0)
         self.total_updates = checkpoint.get('total_updates', 0)
         self.best_reward = checkpoint.get('best_reward', float('-inf'))
         self.recent_rewards = checkpoint.get('recent_rewards', [])
         
-        # 加载网络状态
+        # Load network parameters
         for name, network in self.networks.items():
             state_key = f'{name}_state_dict'
             if state_key in checkpoint and hasattr(network, 'load_state_dict'):
                 network.load_state_dict(checkpoint[state_key])
                 print(f"Loaded {name} network state")
         
-        # 加载优化器状态
+        # Load optimizer state
         for name, optimizer in self.optimizers.items():
             state_key = f'{name}_optimizer_state_dict'
             if state_key in checkpoint and hasattr(optimizer, 'load_state_dict'):
@@ -274,52 +274,50 @@ class BaseRLAlgorithm(ABC):
     
     def print_algorithm_info(self):
         """
-        打印算法详细信息
+        Print detailed algorithm information.
         """
         print(f"\n{'='*60}")
-        print(f"{self.__class__.__name__} 算法信息")
+        print(f"{self.__class__.__name__} Algorithm Info")
         print(f"{'='*60}")
         
-        # 基本信息
-        print(f"设备: {self.device}")
-        print(f"观察空间: {self.observation_space}")
-        print(f"动作空间: {self.action_space}")
+        # Basic info
+        print(f"Device: {self.device}")
+        print(f"Observation space: {self.observation_space}")
+        print(f"Action space: {self.action_space}")
         
-        # 训练统计
+        # Training stats
         stats = self.get_training_stats()
-        print(f"\n训练统计:")
+        print(f"\nTraining Stats:")
         for key, value in stats.items():
             if isinstance(value, float):
                 print(f"  {key}: {value:.4f}")
             else:
                 print(f"  {key}: {value}")
         
-        # 网络信息
+        # Network info
         network_info = self.get_network_info()
         if network_info:
-            print(f"\n网络信息:")
+            print(f"\nNetwork Info:")
             for name, info in network_info.items():
                 print(f"  {name}:")
-                print(f"    总参数: {info['total_parameters']:,}")
-                print(f"    可训练参数: {info['trainable_parameters']:,}")
-                print(f"    设备: {info['device']}")
+                print(f"    total_parameters: {info['total_parameters']:,}")
+                print(f"    trainable_parameters: {info['trainable_parameters']:,}")
+                print(f"    device: {info['device']}")
         
         print(f"{'='*60}\n")
 
 
 class ModelManager:
     """
-    模型管理器
-    
-    负责模型的保存、加载、版本管理等功能
+    Model manager for saving/loading and inspecting checkpoints.
     """
     
     def __init__(self, model_dir: str = None):
         """
-        初始化模型管理器
+        Initialize the model manager.
         
         Args:
-            model_dir (str): 模型保存目录
+            model_dir (str): Directory to store model files
         """
         self.model_dir = model_dir if model_dir else Config.MODEL_DIR
         os.makedirs(self.model_dir, exist_ok=True)
@@ -329,25 +327,25 @@ class ModelManager:
                    filename: str = None, 
                    is_best: bool = False):
         """
-        保存模型
+        Save a model checkpoint.
         
         Args:
-            algorithm (BaseRLAlgorithm): 要保存的算法
-            filename (str): 文件名
-            is_best (bool): 是否是最佳模型
+            algorithm (BaseRLAlgorithm): Algorithm instance to save
+            filename (str): File name
+            is_best (bool): Whether this is the best model so far
         """
         if filename is None:
             filename = f"{algorithm.__class__.__name__.lower()}_model.pth"
         
         filepath = os.path.join(self.model_dir, filename)
         
-        # 创建检查点
+        # Create checkpoint
         checkpoint = algorithm.create_checkpoint()
         
-        # 保存
+        # Persist to disk
         torch.save(checkpoint, filepath)
         
-        # 如果是最佳模型，也保存一份best版本
+        # If best, also write a best_ copy
         if is_best:
             best_filepath = os.path.join(self.model_dir, f"best_{filename}")
             torch.save(checkpoint, best_filepath)
@@ -360,15 +358,15 @@ class ModelManager:
                    filename: str = None, 
                    load_best: bool = False):
         """
-        加载模型
+        Load a model checkpoint.
         
         Args:
-            algorithm (BaseRLAlgorithm): 目标算法
-            filename (str): 文件名
-            load_best (bool): 是否加载最佳模型
+            algorithm (BaseRLAlgorithm): Algorithm to restore into
+            filename (str): File name
+            load_best (bool): Whether to load the best_ file
             
         Returns:
-            dict: 加载的检查点信息
+            dict: Loaded checkpoint
         """
         if filename is None:
             filename = f"{algorithm.__class__.__name__.lower()}_model.pth"
@@ -381,10 +379,10 @@ class ModelManager:
         if not os.path.exists(filepath):
             raise FileNotFoundError(f"Model file not found: {filepath}")
         
-        # 加载检查点
+        # Load checkpoint
         checkpoint = torch.load(filepath, map_location=algorithm.device)
         
-        # 恢复算法状态
+        # Restore algorithm state
         algorithm.load_checkpoint(checkpoint)
         
         print(f"Model loaded from {filepath}")
@@ -393,23 +391,23 @@ class ModelManager:
     
     def list_saved_models(self) -> List[str]:
         """
-        列出所有保存的模型
+        List saved model files.
         
         Returns:
-            list: 模型文件列表
+            list: Model files
         """
         model_files = [f for f in os.listdir(self.model_dir) if f.endswith('.pth')]
         return sorted(model_files)
     
     def get_model_info(self, filename: str) -> Dict[str, Any]:
         """
-        获取模型文件信息
+        Get information about a stored checkpoint.
         
         Args:
-            filename (str): 模型文件名
+            filename (str): Model file name
             
         Returns:
-            dict: 模型信息
+            dict: Model info
         """
         filepath = os.path.join(self.model_dir, filename)
         
@@ -418,7 +416,7 @@ class ModelManager:
         
         checkpoint = torch.load(filepath, map_location='cpu')
         
-        # 提取关键信息
+        # Extract key info
         info = {
             'filename': filename,
             'filepath': filepath,

@@ -1,2 +1,2 @@
-# Networks模块初始化文件
+# Networks package init file
 from .networks import *
