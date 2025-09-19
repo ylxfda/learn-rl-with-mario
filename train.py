@@ -34,8 +34,7 @@ def parse_args():
     # 环境参数
     parser.add_argument('--num_envs', type=int, default=Config.NUM_ENVS,
                        help='并行环境数量')
-    parser.add_argument('--worlds', nargs='+', default=list(Config.WORLD_STAGE),
-                       help='训练使用的关卡列表')
+    # 关卡选择改由配置 Config.WORLD_STAGE 控制，取消命令行覆盖
     parser.add_argument('--render_env', type=int, default=None,
                        help='需要渲染的环境ID（用于观察训练过程）')
     
@@ -130,7 +129,7 @@ class PPOTrainer:
         
         self.envs = create_parallel_mario_envs(
             num_envs=self.args.num_envs,
-            worlds=self.args.worlds,
+            worlds=Config.WORLD_STAGE,
             use_subprocess=True,  # 使用多进程以获得更好的性能
             render_env_id=self.args.render_env
         )
@@ -199,6 +198,47 @@ class PPOTrainer:
         self.episode_lengths = []
         self.best_avg_reward = float('-inf')
         self.episodes_since_best = 0
+
+    def _compute_world_sampling_weights(self, eval_stats):
+        """
+        根据评估结果计算各关卡的采样权重（表现差的权重更高）
+        
+        策略：
+        - 从 eval_stats 中读取每个关卡的平均奖励 eval_avg_reward_X_Y
+        - 以 (max_reward - reward) 作为困难度分数，分数越高权重越大
+        - 应用放大系数 alpha，并加上最小权重下限，最后归一化
+        """
+        worlds = Config.WORLD_STAGE
+        if isinstance(worlds, str):
+            worlds = [worlds]
+        if not worlds or len(worlds) == 1:
+            return None
+
+        # 收集各关卡平均奖励
+        avg_rewards = {}
+        for w in worlds:
+            tag = w.replace('-', '_')
+            key = f'eval_avg_reward_{tag}'
+            avg_rewards[w] = float(eval_stats.get(key, eval_stats.get('eval_avg_reward', 0.0)))
+
+        # 计算困难度分数
+        max_avg = max(avg_rewards.values()) if avg_rewards else 0.0
+        eps = 1e-6
+        alpha = getattr(Config, 'WORLD_SAMPLING_ALPHA', 1.0)
+        base = getattr(Config, 'WORLD_SAMPLING_MIN_WEIGHT', 0.05)
+
+        raw_weights = {}
+        for w, r in avg_rewards.items():
+            score = max_avg - r  # 表现越差分数越高
+            weight = (score + eps) ** alpha + base
+            raw_weights[w] = weight
+
+        # 归一化
+        total = sum(raw_weights.values())
+        if total <= 0:
+            return None
+        weights = {w: (raw_weights[w] / total) for w in worlds}
+        return weights
     
     def collect_rollouts(self):
         """
@@ -325,62 +365,92 @@ class PPOTrainer:
         """
         评估当前模型性能
         
+        - 对配置中的所有关卡逐一评估（每关卡 num_episodes 回合）
+        - 汇总整体与逐关卡统计，整体结果用于早停与最优模型判定
+        
         Args:
-            num_episodes (int): 评估回合数
+            num_episodes (int): 每个关卡的评估回合数
             
         Returns:
-            dict: 评估结果
+            dict: 评估结果（包含整体与逐关卡统计）
         """
-        print(f"评估模型性能（{num_episodes} 回合）...")
-        
         self.ppo.eval()
-        
-        # 创建单个环境用于评估（不渲染）
         from enviroments.mario_env import create_mario_environment
-        eval_env = create_mario_environment(Config.WORLD_STAGE)
-        
-        eval_rewards = []
-        eval_lengths = []
-        
-        for episode in range(num_episodes):
-            obs = eval_env.reset()
-            obs = torch.FloatTensor(obs).unsqueeze(0).to(self.device)
-            
-            episode_reward = 0
-            episode_length = 0
-            done = False
-            
-            while not done:
-                with torch.no_grad():
-                    actions, _ = self.ppo.act(obs, deterministic=True)  # 确定性动作
-                
-                obs, reward, done, info = eval_env.step(actions.item())
+
+        # 评估关卡由配置控制（兼容字符串/列表）
+        worlds = Config.WORLD_STAGE
+        if isinstance(worlds, str):
+            worlds = [worlds]
+
+        print(f"评估模型性能（每关卡 {num_episodes} 回合）：{worlds}")
+
+        # 整体汇总
+        all_rewards = []
+        all_lengths = []
+
+        # 逐关卡统计
+        per_world_stats = {}
+
+        for world in worlds:
+            eval_env = create_mario_environment(world=world, render_mode=None)
+            world_rewards = []
+            world_lengths = []
+
+            for episode in range(num_episodes):
+                obs = eval_env.reset()
                 obs = torch.FloatTensor(obs).unsqueeze(0).to(self.device)
-                
-                episode_reward += reward
-                episode_length += 1
-                
-                # 防止无限循环
-                if episode_length > 5000:
-                    break
-            
-            eval_rewards.append(episode_reward)
-            eval_lengths.append(episode_length)
-            
-            print(f"  评估回合 {episode+1}: 奖励={episode_reward:.2f}, 长度={episode_length}")
-        
-        eval_env.close()
-        
+
+                episode_reward = 0.0
+                episode_length = 0
+                done = False
+
+                while not done:
+                    with torch.no_grad():
+                        actions, _ = self.ppo.act(obs, deterministic=True)
+                    obs, reward, done, info = eval_env.step(actions.item())
+                    obs = torch.FloatTensor(obs).unsqueeze(0).to(self.device)
+                    episode_reward += reward
+                    episode_length += 1
+                    if episode_length > 5000:
+                        break
+
+                world_rewards.append(episode_reward)
+                world_lengths.append(episode_length)
+                print(f"  [{world}] 回合 {episode+1}: 奖励={episode_reward:.2f}, 长度={episode_length}")
+
+            eval_env.close()
+
+            # 记录逐关卡统计
+            per_world_stats[world] = {
+                'avg_reward': float(np.mean(world_rewards)) if world_rewards else 0.0,
+                'std_reward': float(np.std(world_rewards)) if world_rewards else 0.0,
+                'max_reward': float(np.max(world_rewards)) if world_rewards else 0.0,
+                'min_reward': float(np.min(world_rewards)) if world_rewards else 0.0,
+                'avg_length': float(np.mean(world_lengths)) if world_lengths else 0.0,
+            }
+
+            all_rewards.extend(world_rewards)
+            all_lengths.extend(world_lengths)
+
+        # 汇总整体统计（用于选最优/早停）
         eval_stats = {
-            'eval_avg_reward': np.mean(eval_rewards),
-            'eval_std_reward': np.std(eval_rewards),
-            'eval_max_reward': np.max(eval_rewards),
-            'eval_min_reward': np.min(eval_rewards),
-            'eval_avg_length': np.mean(eval_lengths),
+            'eval_avg_reward': float(np.mean(all_rewards)) if all_rewards else 0.0,
+            'eval_std_reward': float(np.std(all_rewards)) if all_rewards else 0.0,
+            'eval_max_reward': float(np.max(all_rewards)) if all_rewards else 0.0,
+            'eval_min_reward': float(np.min(all_rewards)) if all_rewards else 0.0,
+            'eval_avg_length': float(np.mean(all_lengths)) if all_lengths else 0.0,
         }
-        
-        print(f"评估完成: 平均奖励={eval_stats['eval_avg_reward']:.2f} ± {eval_stats['eval_std_reward']:.2f}")
-        
+
+        # 逐关卡指标也写入，便于日志系统记录（避免TensorBoard标签中的连字符，替换为下划线）
+        for world, stats in per_world_stats.items():
+            tag = world.replace('-', '_')
+            eval_stats[f'eval_avg_reward_{tag}'] = stats['avg_reward']
+            eval_stats[f'eval_std_reward_{tag}'] = stats['std_reward']
+            eval_stats[f'eval_max_reward_{tag}'] = stats['max_reward']
+            eval_stats[f'eval_min_reward_{tag}'] = stats['min_reward']
+            eval_stats[f'eval_avg_length_{tag}'] = stats['avg_length']
+
+        print(f"评估完成: 总体平均奖励={eval_stats['eval_avg_reward']:.2f} ± {eval_stats['eval_std_reward']:.2f}")
         return eval_stats
     
     def should_stop_training(self):
@@ -487,6 +557,18 @@ class PPOTrainer:
                         is_best=is_best
                     )
                     
+                    # 动态调整：1) 单环境内按权重切换 2) 通过子环境数量分配
+                    weights = self._compute_world_sampling_weights(eval_stats)
+                    if weights:
+                        try:
+                            if getattr(Config, 'DYNAMIC_WORLD_SAMPLING', False) and not getattr(Config, 'USE_DYNAMIC_WORLD_COUNTS', False):
+                                self.envs.set_world_weights(weights)
+                                print(f"已根据评估结果更新关卡采样权重: {weights}")
+                            if getattr(Config, 'USE_DYNAMIC_WORLD_COUNTS', False):
+                                self.envs.set_world_allocation(weights)
+                        except Exception as e:
+                            print(f"更新关卡采样配置失败: {e}")
+                    
                     # 记录评估结果
                     self.logger.log_training_step(**eval_stats)
                 
@@ -546,7 +628,7 @@ def main():
     print("=" * 60)
     print(f"设备: {torch.device(args.device) if args.device else Config.DEVICE}")
     print(f"并行环境数: {args.num_envs}")
-    print(f"训练关卡: {args.worlds}")
+    print(f"训练关卡: {Config.WORLD_STAGE}")
     print(f"最大回合数: {args.max_episodes:,}")
     print(f"最大步数: {args.max_steps:,}")
     print("=" * 60)

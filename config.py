@@ -12,7 +12,15 @@ class Config:
     
     # 游戏环境配置
     ENV_NAME = 'SuperMarioBros-v0'              # 环境名称
-    WORLD_STAGE = ['1-1', '1-2', '1-3', '1-4']  # 继续训练的关卡列表
+    WORLD_STAGE = ['1-1', '1-2', '1-3', '1-4']  # 训练/评估的关卡列表
+    
+    # 多关卡动态采样控制
+    DYNAMIC_WORLD_SAMPLING = False   # 是否在单环境内按权重切换关卡（默认关闭）
+    USE_DYNAMIC_WORLD_COUNTS = True  # 是否通过调整各关卡子环境数量来动态采样
+    WORLD_SAMPLING_MIN_WEIGHT = 0.05 # 每个关卡的最小采样权重占比
+    WORLD_SAMPLING_ALPHA = 1.0       # 权重放大系数（对差异的敏感度）
+    WORLD_SWITCH_PROB = 1.0          # 多世界环境在reset时切换关卡的概率（仅当 DYNAMIC_WORLD_SAMPLING=True 时有效）
+    WORLD_MIN_ENVS_PER_WORLD = 1     # 动态分配时每个关卡的最少子环境数（避免完全遗忘）
 
     # 并行环境数量 - 影响训练速度和样本多样性
     NUM_ENVS = 48

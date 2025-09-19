@@ -125,6 +125,26 @@ class MarioEnvironment:
         关闭环境
         """
         self.env.close()
+
+    def reconfigure_world(self, world: str, render_mode=None):
+        """
+        重新配置到新的关卡（单世界环境）
+        
+        Args:
+            world (str): 新的世界-关卡，如 '1-2'
+            render_mode (str): 渲染模式
+        """
+        try:
+            if hasattr(self, 'env') and self.env is not None:
+                self.env.close()
+        except Exception:
+            pass
+        self.world = world
+        if render_mode is not None:
+            self.render_mode = render_mode
+        self.env = self._create_env()
+        self.observation_space = self.env.observation_space
+        self.action_space = self.env.action_space
     
     def get_action_meanings(self):
         """
@@ -176,7 +196,7 @@ class MultiWorldMarioEnvironment(MarioEnvironment):
     支持在不同关卡之间切换，增加训练的多样性
     """
     
-    def __init__(self, worlds=['1-1', '1-2', '1-3'], render_mode=None, random_start=True):
+    def __init__(self, worlds=['1-1', '1-2', '1-3'], render_mode=None, random_start=True, world_weights=None):
         """
         初始化多世界环境
         
@@ -188,6 +208,12 @@ class MultiWorldMarioEnvironment(MarioEnvironment):
         self.worlds = worlds
         self.current_world_idx = 0
         self.random_start = random_start
+        # 切换概率（来自配置以便统一控制）
+        self.switch_prob = getattr(Config, 'WORLD_SWITCH_PROB', 1.0)
+        
+        # 采样权重
+        self.world_weights = None
+        self.set_world_weights(world_weights)
         
         # 如果随机开始，选择一个随机关卡
         if random_start:
@@ -199,7 +225,34 @@ class MultiWorldMarioEnvironment(MarioEnvironment):
         # 世界切换统计
         self.world_episode_counts = {world: 0 for world in worlds}
         self.world_success_counts = {world: 0 for world in worlds}
-    
+
+    def _normalized_weights(self):
+        if self.world_weights is None:
+            # 默认均匀分布
+            return np.ones(len(self.worlds)) / len(self.worlds)
+        w = np.array(self.world_weights, dtype=np.float64)
+        w = np.clip(w, 1e-8, None)
+        w = w / w.sum()
+        return w
+
+    def set_world_weights(self, weights):
+        """
+        设置/更新各关卡的采样权重
+        
+        Args:
+            weights (list|dict|None):
+                - list/ndarray: 按 self.worlds 顺序的权重
+                - dict: {world: weight}
+                - None: 使用均匀分布
+        """
+        if weights is None:
+            self.world_weights = None
+            return
+        if isinstance(weights, dict):
+            self.world_weights = [float(weights.get(w, 1.0)) for w in self.worlds]
+        else:
+            self.world_weights = list(map(float, weights))
+
     def switch_world(self, world_idx=None):
         """
         切换到指定世界
@@ -208,7 +261,9 @@ class MultiWorldMarioEnvironment(MarioEnvironment):
             world_idx (int): 世界索引，None表示随机选择
         """
         if world_idx is None:
-            world_idx = np.random.randint(len(self.worlds))
+            # 按权重采样关卡
+            probs = self._normalized_weights()
+            world_idx = int(np.random.choice(len(self.worlds), p=probs))
         
         if world_idx != self.current_world_idx:
             self.current_world_idx = world_idx
@@ -218,7 +273,7 @@ class MultiWorldMarioEnvironment(MarioEnvironment):
             self.env.close()
             self.env = self._create_env()
             
-            print(f"切换到世界: {self.world}")
+            # print(f"切换到世界: {self.world}")
     
     def reset(self, switch_world=None):
         """
@@ -234,7 +289,8 @@ class MultiWorldMarioEnvironment(MarioEnvironment):
         if switch_world is None:
             switch_world = self.random_start
         
-        if switch_world and np.random.random() < 0.3:  # 30%概率切换世界
+        # 根据配置的概率按权重切换世界（默认每回合都按权重选择）
+        if switch_world and np.random.random() < self.switch_prob:
             self.switch_world()
         
         # 更新当前世界的回合计数
@@ -297,7 +353,7 @@ class MultiWorldMarioEnvironment(MarioEnvironment):
         return info
 
 
-def create_mario_environment(world='1-1', multi_world=False, worlds=None, render_mode=None):
+def create_mario_environment(world='1-1', multi_world=False, worlds=None, render_mode=None, world_weights=None):
     """
     马里奥环境创建工厂函数
     
@@ -314,7 +370,7 @@ def create_mario_environment(world='1-1', multi_world=False, worlds=None, render
         if worlds is None:
             # 默认的多世界配置
             worlds = ['1-1', '1-2', '1-3', '1-4']
-        return MultiWorldMarioEnvironment(worlds, render_mode)
+        return MultiWorldMarioEnvironment(worlds, render_mode, random_start=True, world_weights=world_weights)
     else:
         return MarioEnvironment(world, render_mode)
 

@@ -109,6 +109,27 @@ class SubprocVecEnv:
                     info = env.get_info() if hasattr(env, 'get_info') else {}
                     remote.send(info)
                 
+                elif cmd == 'set_world_weights':
+                    # 更新多世界环境的采样权重
+                    weights = data
+                    if hasattr(env, 'set_world_weights'):
+                        env.set_world_weights(weights)
+                        remote.send('ok')
+                    else:
+                        remote.send('ignored')
+
+                elif cmd == 'set_world':
+                    # 重新配置到指定关卡（单世界环境）
+                    new_world = data
+                    if hasattr(env, 'reconfigure_world'):
+                        try:
+                            env.reconfigure_world(new_world)
+                            remote.send('ok')
+                        except Exception as e:
+                            remote.send(('error', f'Failed to set world: {e}'))
+                    else:
+                        remote.send('ignored')
+                
                 else:
                     raise NotImplementedError(f"Command {cmd} not implemented")
             
@@ -131,6 +152,39 @@ class SubprocVecEnv:
             remote.send(('step', action))
         
         self.waiting = True
+
+    def set_world_weights(self, weights):
+        """
+        设置所有子环境的关卡采样权重（仅多世界环境有效）
+        
+        Args:
+            weights (dict|list): 权重配置
+        """
+        for remote in self.remotes:
+            remote.send(('set_world_weights', weights))
+        # 等待确认，避免队列堆积
+        for remote in self.remotes:
+            try:
+                remote.recv()
+            except Exception:
+                pass
+
+    def set_worlds(self, worlds):
+        """
+        为每个子环境设置固定关卡
+        
+        Args:
+            worlds (list[str]): 长度等于 num_envs 的世界名称列表
+        """
+        if len(worlds) != self.num_envs:
+            raise ValueError("worlds length must equal num_envs")
+        for remote, w in zip(self.remotes, worlds):
+            remote.send(('set_world', w))
+        for remote in self.remotes:
+            try:
+                remote.recv()
+            except Exception:
+                pass
     
     def step_wait(self):
         """
@@ -296,6 +350,24 @@ class DummyVecEnv:
         """
         observations = [env.reset() for env in self.envs]
         return np.array(observations)
+
+    def set_world_weights(self, weights):
+        """
+        设置所有环境的关卡采样权重（仅多世界环境有效）
+        """
+        for env in self.envs:
+            if hasattr(env, 'set_world_weights'):
+                env.set_world_weights(weights)
+
+    def set_worlds(self, worlds):
+        """
+        为每个环境设置固定关卡
+        """
+        if len(worlds) != self.num_envs:
+            raise ValueError("worlds length must equal num_envs")
+        for env, w in zip(self.envs, worlds):
+            if hasattr(env, 'reconfigure_world'):
+                env.reconfigure_world(w)
     
     def close(self):
         """
@@ -365,16 +437,24 @@ class ParallelMarioEnvironments:
         
         # 创建环境函数列表
         env_fns = []
+        use_dynamic = getattr(Config, 'DYNAMIC_WORLD_SAMPLING', False) and not getattr(Config, 'USE_DYNAMIC_WORLD_COUNTS', False) and len(worlds) > 1
         for i in range(num_envs):
-            # 轮流分配世界
-            world = worlds[i % len(worlds)]
             # 只有指定的环境才渲染
             render_mode = 'human' if i == render_env_id else None
-            
-            env_fn = lambda w=world, r=render_mode: create_mario_environment(
-                world=w, 
-                render_mode=r
-            )
+            if use_dynamic:
+                # 多世界环境：每回合按权重重采样关卡
+                env_fn = lambda wlist=worlds, r=render_mode: create_mario_environment(
+                    multi_world=True,
+                    worlds=wlist,
+                    render_mode=r
+                )
+            else:
+                # 静态：固定到某个关卡
+                world = worlds[i % len(worlds)]
+                env_fn = lambda w=world, r=render_mode: create_mario_environment(
+                    world=w,
+                    render_mode=r
+                )
             env_fns.append(env_fn)
         
         # 创建向量化环境
@@ -396,6 +476,12 @@ class ParallelMarioEnvironments:
         print(f"创建了 {num_envs} 个并行马里奥环境")
         print(f"观察空间: {self.observation_space}")
         print(f"动作空间: {self.action_space}")
+        if use_dynamic:
+            print("已启用多关卡动态采样（按权重在reset时重采样关卡）")
+
+        # 保存当前世界分配（用于后续动态调整）
+        self.available_worlds = list(worlds)
+        self.current_worlds = [worlds[i % len(worlds)] for i in range(num_envs)] if not use_dynamic else None
     
     def reset(self):
         """
@@ -457,6 +543,77 @@ class ParallelMarioEnvironments:
         
         if env_id is not None and env_id < self.num_envs:
             return self.vec_env.render(env_id=env_id)
+    
+    def set_world_weights(self, weights):
+        """
+        更新各关卡采样权重（仅在动态采样启用时生效）
+        
+        Args:
+            weights (dict|list): {world: weight} 或按worlds顺序的列表
+        """
+        if hasattr(self.vec_env, 'set_world_weights'):
+            self.vec_env.set_world_weights(weights)
+
+    def set_world_allocation(self, weights_or_counts):
+        """
+        动态调整各关卡的子环境数量（每个子环境固定一个关卡）
+        
+        Args:
+            weights_or_counts (dict|list):
+                - dict {world: weight 或 count}
+                - list 与 self.available_worlds 顺序一致的权重或数量
+        """
+        worlds = self.available_worlds
+        n = self.num_envs
+        # 解析输入为权重/数量数组
+        if isinstance(weights_or_counts, dict):
+            arr = np.array([float(weights_or_counts.get(w, 0.0)) for w in worlds], dtype=np.float64)
+        else:
+            arr = np.array(list(map(float, weights_or_counts)), dtype=np.float64)
+            if arr.size != len(worlds):
+                raise ValueError("weights_or_counts size must match number of available worlds")
+        # 如果总和大于n，按比例缩放；如果小于等于1，按权重 * n 分配
+        min_envs = int(getattr(Config, 'WORLD_MIN_ENVS_PER_WORLD', 1))
+        if arr.sum() <= 1.0 + 1e-9:
+            weights = arr / (arr.sum() + 1e-9)
+            counts = np.floor(weights * n).astype(int)
+        else:
+            counts = arr.astype(int)
+        # 至少 min_envs 个
+        counts = np.maximum(counts, min_envs)
+        # 调整总数为 n
+        diff = counts.sum() - n
+        if diff != 0:
+            # 计算调整顺序：若需要减少，从平均奖励高（推测容易）的世界减；此处简单按当前 counts 大小调整
+            order = np.argsort(counts)[::-1] if diff > 0 else np.argsort(counts)
+            i = 0
+            while diff != 0 and i < len(order):
+                idx = order[i]
+                if diff > 0 and counts[idx] > min_envs:
+                    counts[idx] -= 1
+                    diff -= 1
+                    i = 0
+                    continue
+                if diff < 0:
+                    counts[idx] += 1
+                    diff += 1
+                    i = 0
+                    continue
+                i += 1
+        # 展开为 per-env 世界列表
+        new_assignment = []
+        for w, c in zip(worlds, counts):
+            new_assignment.extend([w] * c)
+        # 若因四舍五入误差导致列表长度不等于 n，修正
+        if len(new_assignment) > n:
+            new_assignment = new_assignment[:n]
+        elif len(new_assignment) < n:
+            new_assignment.extend([worlds[0]] * (n - len(new_assignment)))
+        # 下发到向量环境
+        if hasattr(self.vec_env, 'set_worlds'):
+            self.vec_env.set_worlds(new_assignment)
+            self.current_worlds = list(new_assignment)
+            print(f"已更新子环境关卡分配: {dict(zip(worlds, counts))}")
     
     def close(self):
         """
