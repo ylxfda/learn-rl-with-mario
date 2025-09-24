@@ -109,15 +109,6 @@ class SubprocVecEnv:
                     info = env.get_info() if hasattr(env, 'get_info') else {}
                     remote.send(info)
                 
-                elif cmd == 'set_world_weights':
-                    # Update sampling weights for multi-world env
-                    weights = data
-                    if hasattr(env, 'set_world_weights'):
-                        env.set_world_weights(weights)
-                        remote.send('ok')
-                    else:
-                        remote.send('ignored')
-
                 elif cmd == 'set_world':
                     # Reconfigure to specific world (single-world env)
                     new_world = data
@@ -152,22 +143,6 @@ class SubprocVecEnv:
             remote.send(('step', action))
         
         self.waiting = True
-
-    def set_world_weights(self, weights):
-        """
-        Set world sampling weights for all sub-envs (multi-world only).
-        
-        Args:
-            weights (dict|list): weights config
-        """
-        for remote in self.remotes:
-            remote.send(('set_world_weights', weights))
-        # Wait for ack to avoid queue buildup
-        for remote in self.remotes:
-            try:
-                remote.recv()
-            except Exception:
-                pass
 
     def set_worlds(self, worlds):
         """
@@ -352,14 +327,6 @@ class DummyVecEnv:
         observations = [env.reset() for env in self.envs]
         return np.array(observations)
 
-    def set_world_weights(self, weights):
-        """
-        Set world sampling weights for all envs (multi-world only).
-        """
-        for env in self.envs:
-            if hasattr(env, 'set_world_weights'):
-                env.set_world_weights(weights)
-
     def set_worlds(self, worlds):
         """
         Set a fixed world for each env.
@@ -436,24 +403,14 @@ class ParallelMarioEnvironments:
         
         # Build env factory list
         env_fns = []
-        use_dynamic = getattr(Config, 'DYNAMIC_WORLD_SAMPLING', False) and not getattr(Config, 'USE_DYNAMIC_WORLD_COUNTS', False) and len(worlds) > 1
         for i in range(num_envs):
             # Only the specified env renders
             render_mode = 'human' if i == render_env_id else None
-            if use_dynamic:
-                # Multi-world: weighted re-sampling per episode
-                env_fn = lambda wlist=worlds, r=render_mode: create_mario_environment(
-                    multi_world=True,
-                    worlds=wlist,
-                    render_mode=r
-                )
-            else:
-                # Static: fixed world per env
-                world = worlds[i % len(worlds)]
-                env_fn = lambda w=world, r=render_mode: create_mario_environment(
-                    world=w,
-                    render_mode=r
-                )
+            world = worlds[i % len(worlds)]
+            env_fn = lambda w=world, r=render_mode: create_mario_environment(
+                world=w,
+                render_mode=r
+            )
             env_fns.append(env_fn)
         
         # Create vectorized env
@@ -475,12 +432,9 @@ class ParallelMarioEnvironments:
         print(f"Created {num_envs} parallel Mario environments")
         print(f"Observation space: {self.observation_space}")
         print(f"Action space: {self.action_space}")
-        if use_dynamic:
-            print("Dynamic world sampling enabled (weighted selection on reset)")
-
         # Save current world allocation (for dynamic adjustments)
         self.available_worlds = list(worlds)
-        self.current_worlds = [worlds[i % len(worlds)] for i in range(num_envs)] if not use_dynamic else None
+        self.current_worlds = [worlds[i % len(worlds)] for i in range(num_envs)]
     
     def reset(self):
         """
@@ -543,16 +497,6 @@ class ParallelMarioEnvironments:
         if env_id is not None and env_id < self.num_envs:
             return self.vec_env.render(env_id=env_id)
     
-    def set_world_weights(self, weights):
-        """
-        Update per-world sampling weights (effective when dynamic sampling enabled).
-        
-        Args:
-            weights (dict|list): {world: weight} or list in worlds order
-        """
-        if hasattr(self.vec_env, 'set_world_weights'):
-            self.vec_env.set_world_weights(weights)
-
     def set_world_allocation(self, weights_or_counts):
         """
         Dynamically adjust number of sub-envs per world (each sub-env fixed to one world).

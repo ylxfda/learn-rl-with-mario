@@ -12,18 +12,16 @@ class Config:
     
     # Gym environment
     ENV_NAME = 'SuperMarioBros-v0'              # environment id
-    WORLD_STAGE = ['1-1', '1-2', '1-3', '1-4']  # worlds to train/evaluate on
+    WORLD_STAGE = ['1-1', '1-2', '1-3', '1-4', '2-1', '2-2', '2-3', '2-4']  # worlds to sample from
     
     # Multi-world dynamic sampling controls
-    DYNAMIC_WORLD_SAMPLING = False   # re-sample world with weights inside single env
-    USE_DYNAMIC_WORLD_COUNTS = True  # allocate per-world env counts dynamically
+    USE_DYNAMIC_WORLD_COUNTS = False  # allocate per-world env counts dynamically
     WORLD_SAMPLING_MIN_WEIGHT = 0.05 # minimum sampling weight per world
     WORLD_SAMPLING_ALPHA = 1.0       # amplification factor (sensitivity to difficulty)
-    WORLD_SWITCH_PROB = 1.0          # switch probability on reset (only when DYNAMIC_WORLD_SAMPLING=True)
     WORLD_MIN_ENVS_PER_WORLD = 1     # min sub-envs per world to avoid forgetting
 
     # Number of parallel envs — impacts speed/diversity
-    NUM_ENVS = 48
+    NUM_ENVS = 32
     
     # Preprocessing
     FRAME_SIZE = 84                 # resized image (84x84)

@@ -557,17 +557,13 @@ class PPOTrainer:
                         is_best=is_best
                     )
                     
-                    # Dynamic world sampling: 1) weighted per-episode switch; 2) per-env allocation
+                    # Update world allocation using evaluation feedback
                     weights = self._compute_world_sampling_weights(eval_stats)
-                    if weights:
+                    if weights and getattr(Config, 'USE_DYNAMIC_WORLD_COUNTS', False):
                         try:
-                            if getattr(Config, 'DYNAMIC_WORLD_SAMPLING', False) and not getattr(Config, 'USE_DYNAMIC_WORLD_COUNTS', False):
-                                self.envs.set_world_weights(weights)
-                                print(f"Updated world sampling weights: {weights}")
-                            if getattr(Config, 'USE_DYNAMIC_WORLD_COUNTS', False):
-                                self.envs.set_world_allocation(weights)
+                            self.envs.set_world_allocation(weights)
                         except Exception as e:
-                            print(f"Failed to update world sampling config: {e}")
+                            print(f"Failed to update world allocation: {e}")
                     
                     # Log eval stats
                     self.logger.log_training_step(**eval_stats)

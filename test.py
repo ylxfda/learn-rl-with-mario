@@ -17,7 +17,7 @@ from tqdm import tqdm
 
 # Project modules
 from config import Config
-from enviroments.mario_env import create_mario_environment, MultiWorldMarioEnvironment
+from enviroments.mario_env import create_mario_environment
 from algorithms.ppo import create_ppo_algorithm
 from algorithms.base import ModelManager
 
@@ -161,11 +161,11 @@ class PPOTester:
         render_mode = self.args.render_mode if self.args.render else None
         
         if self.args.worlds:
-            # Multi-world testing
-            self.env = MultiWorldMarioEnvironment(
-                worlds=self.args.worlds,
-                render_mode=render_mode,
-                random_start=True
+            # Multi-world testing: reuse a single env and rotate worlds per episode
+            initial_world = self.args.worlds[0]
+            self.env = create_mario_environment(
+                world=initial_world,
+                render_mode=render_mode
             )
             print(f"Multi-worlds: {self.args.worlds}")
         else:
@@ -190,6 +190,13 @@ class PPOTester:
         """
         print(f"\nStarting episode {episode_num + 1}")
         
+        # Swap world if multi-world testing requested
+        if self.args.worlds:
+            target_world = self.args.worlds[episode_num % len(self.args.worlds)]
+            if getattr(self.env, 'reconfigure_world', None):
+                self.env.reconfigure_world(target_world)
+            print(f"Testing world: {target_world}")
+
         # Reset env
         observation = self.env.reset()
         observation = torch.FloatTensor(observation).unsqueeze(0).to(self.device)
