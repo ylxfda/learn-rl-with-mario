@@ -16,6 +16,7 @@ import os
 import time
 import argparse
 import numpy as np
+from collections import defaultdict
 import torch
 from tqdm import tqdm
 
@@ -199,6 +200,12 @@ class PPOTrainer:
         self.best_avg_reward = float('-inf')
         self.episodes_since_best = 0
 
+        # Track rollout coverage per world (steps/episodes)
+        worlds = Config.WORLD_STAGE if isinstance(Config.WORLD_STAGE, (list, tuple)) else [Config.WORLD_STAGE]
+        baseline_steps = Config.STEPS_PER_UPDATE * self.args.num_envs / max(len(worlds), 1)
+        self.world_step_tracker = {world: baseline_steps for world in worlds}
+        self.world_episode_tracker = {world: 1.0 for world in worlds}
+
     def _compute_world_sampling_weights(self, eval_stats):
         """
         Compute sampling weights per world based on eval results (harder worlds get higher weight).
@@ -216,21 +223,38 @@ class PPOTrainer:
 
         # Collect per-world average rewards
         avg_rewards = {}
+        avg_lengths = {}
         for w in worlds:
             tag = w.replace('-', '_')
             key = f'eval_avg_reward_{tag}'
             avg_rewards[w] = float(eval_stats.get(key, eval_stats.get('eval_avg_reward', 0.0)))
+            len_key = f'eval_avg_length_{tag}'
+            avg_lengths[w] = float(eval_stats.get(len_key, eval_stats.get('eval_avg_length', 0.0)))
 
         # Compute difficulty scores
         max_avg = max(avg_rewards.values()) if avg_rewards else 0.0
+        max_length = max(avg_lengths.values()) if avg_lengths else 0.0
         eps = 1e-6
         alpha = getattr(Config, 'WORLD_SAMPLING_ALPHA', 1.0)
         base = getattr(Config, 'WORLD_SAMPLING_MIN_WEIGHT', 0.05)
+        length_weight = getattr(Config, 'WORLD_LENGTH_WEIGHT', 1.0)
+        step_weight = getattr(Config, 'WORLD_STEP_WEIGHT', 1.0)
+        max_train_steps = 0.0
+        if step_weight > 0 and hasattr(self, 'world_step_tracker') and self.world_step_tracker:
+            max_train_steps = max(self.world_step_tracker.values())
 
         raw_weights = {}
         for w, r in avg_rewards.items():
             score = max_avg - r  # lower reward -> higher score
             weight = (score + eps) ** alpha + base
+            if length_weight > 0 and max_length > 0:
+                avg_len = avg_lengths.get(w, 0.0)
+                length_factor = (max_length / max(avg_len, 1.0)) ** length_weight
+                weight *= length_factor
+            if step_weight > 0 and max_train_steps > 0:
+                train_steps = self.world_step_tracker.get(w, 0.0)
+                step_factor = (max_train_steps / max(train_steps, 1.0)) ** step_weight
+                weight *= step_factor
             raw_weights[w] = weight
 
         # Normalize
@@ -239,7 +263,46 @@ class PPOTrainer:
             return None
         weights = {w: (raw_weights[w] / total) for w in worlds}
         return weights
-    
+
+    def _update_world_rollout_stats(self, step_counts, episode_counts):
+        """Update smoothed per-world rollout statistics"""
+        if not hasattr(self, 'world_step_tracker'):
+            return
+
+        ema_coeff = float(getattr(Config, 'WORLD_STEP_EMA', 0.7))
+        ema_coeff = min(max(ema_coeff, 0.0), 0.999)
+
+        metrics = {}
+        tracker_worlds = set(self.world_step_tracker.keys()) | set(step_counts.keys()) | set(episode_counts.keys())
+        for world in tracker_worlds:
+            if world not in self.world_step_tracker:
+                self.world_step_tracker[world] = 0.0
+            if world not in self.world_episode_tracker:
+                self.world_episode_tracker[world] = 1e-6
+
+            current_steps = float(step_counts.get(world, 0.0))
+            previous_steps = float(self.world_step_tracker.get(world, 0.0))
+            if previous_steps > 0 and ema_coeff < 1.0:
+                updated_steps = ema_coeff * previous_steps + (1.0 - ema_coeff) * current_steps
+            else:
+                updated_steps = current_steps if current_steps > 0 else previous_steps
+            self.world_step_tracker[world] = max(updated_steps, 0.0)
+
+            current_episodes = float(episode_counts.get(world, 0.0))
+            previous_episodes = float(self.world_episode_tracker.get(world, 0.0))
+            if previous_episodes > 0 and ema_coeff < 1.0:
+                updated_episodes = ema_coeff * previous_episodes + (1.0 - ema_coeff) * current_episodes
+            else:
+                updated_episodes = current_episodes if current_episodes > 0 else previous_episodes
+            self.world_episode_tracker[world] = max(updated_episodes, 1e-6)
+
+            tag = world.replace('-', '_')
+            metrics[f'rollout_steps_{tag}'] = current_steps
+            metrics[f'rollout_episodes_{tag}'] = current_episodes
+
+        if metrics:
+            self.logger.log_training_step(**metrics)
+
     def collect_rollouts(self):
         """
         Collect one batch of rollouts.
@@ -266,7 +329,11 @@ class PPOTrainer:
         episode_lengths = []
         current_episode_rewards = np.zeros(self.args.num_envs)
         current_episode_lengths = np.zeros(self.args.num_envs)
-        
+
+        world_step_counts = defaultdict(float)
+        world_episode_counts = defaultdict(float)
+        world_assignments = list(getattr(self.envs, 'current_worlds', []) or [])
+
         # Collect fixed number of steps
         for step in range(Config.STEPS_PER_UPDATE):
             # Select actions
@@ -291,7 +358,18 @@ class PPOTrainer:
             # Update stats
             current_episode_rewards += rewards.cpu().numpy()
             current_episode_lengths += 1
-            
+
+            # Track per-world step coverage
+            if world_assignments:
+                for world in world_assignments:
+                    if world is not None:
+                        world_step_counts[world] += 1
+            else:
+                for info in infos:
+                    world = info.get('world') if isinstance(info, dict) else None
+                    if world is not None:
+                        world_step_counts[world] += 1
+
             # Handle episode termination
             for i, done in enumerate(dones):
                 if done:
@@ -313,10 +391,16 @@ class PPOTrainer:
                     current_episode_lengths[i] = 0
                     
                     collect_stats['episodes_completed'] += 1
+
+                    world = world_assignments[i] if i < len(world_assignments) else info.get('world')
+                    if world is None and isinstance(info, dict):
+                        world = info.get('world')
+                    if world is not None:
+                        world_episode_counts[world] += 1
             
             # Next observations
             observations = next_observations
-        
+
         # Value of last observations (for GAE)
         with torch.no_grad():
             next_values = self.ppo.compute_value(next_observations)
@@ -336,7 +420,10 @@ class PPOTrainer:
             # Update global stats
             self.episode_rewards.extend(episode_rewards)
             self.episode_lengths.extend(episode_lengths)
-        
+
+        # Update world rollout trackers for adaptive sampling
+        self._update_world_rollout_stats(world_step_counts, world_episode_counts)
+
         return collect_stats
     
     def train_step(self):

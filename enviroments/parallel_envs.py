@@ -515,34 +515,47 @@ class ParallelMarioEnvironments:
             arr = np.array(list(map(float, weights_or_counts)), dtype=np.float64)
             if arr.size != len(worlds):
                 raise ValueError("weights_or_counts size must match number of available worlds")
-        # If sum > n scale proportionally; if <=1 treat as weights * n
+
+        arr = np.clip(arr, 0.0, None)
+        total = arr.sum()
+        if total <= 0:
+            arr = np.ones(len(worlds), dtype=np.float64)
+            total = float(len(worlds))
+
+        weights = arr / total
+        raw = weights * n
+        counts = np.floor(raw).astype(int)
+
+        # Distribute remaining envs using largest remainder method
+        remainder = n - counts.sum()
+        if remainder > 0:
+            fractional = raw - counts
+            order = np.argsort(fractional)[::-1]
+            for idx in order[:remainder]:
+                counts[idx] += 1
+
         min_envs = int(getattr(Config, 'WORLD_MIN_ENVS_PER_WORLD', 1))
-        if arr.sum() <= 1.0 + 1e-9:
-            weights = arr / (arr.sum() + 1e-9)
-            counts = np.floor(weights * n).astype(int)
-        else:
-            counts = arr.astype(int)
-        # At least min_envs per world
-        counts = np.maximum(counts, min_envs)
-        # Adjust total to n
+        if min_envs > 0:
+            counts = np.maximum(counts, min_envs)
+
+        # Adjust if enforcing min envs caused overflow
         diff = counts.sum() - n
-        if diff != 0:
-            # Adjustment order: reduce from larger counts first
-            order = np.argsort(counts)[::-1] if diff > 0 else np.argsort(counts)
-            i = 0
-            while diff != 0 and i < len(order):
-                idx = order[i]
-                if diff > 0 and counts[idx] > min_envs:
+        if diff > 0:
+            order = np.argsort(weights)  # reduce from lowest weight first
+            for idx in order:
+                while diff > 0 and counts[idx] > min_envs:
                     counts[idx] -= 1
                     diff -= 1
-                    i = 0
-                    continue
-                if diff < 0:
+                if diff == 0:
+                    break
+        elif diff < 0:
+            order = np.argsort(weights)[::-1]
+            for idx in order:
+                while diff < 0:
                     counts[idx] += 1
                     diff += 1
-                    i = 0
-                    continue
-                i += 1
+                if diff == 0:
+                    break
         # Expand to per-env world list
         new_assignment = []
         for w, c in zip(worlds, counts):

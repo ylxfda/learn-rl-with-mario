@@ -108,6 +108,10 @@ class MarioEnvironment:
         next_state, reward, done, info = self.env.step(action)
         self.total_steps += 1
         
+        if not isinstance(info, dict):
+            info = {'raw_info': info}
+        info.setdefault('world', self.world)
+
         return next_state, reward, done, info
     
     def render(self, mode='human'):
