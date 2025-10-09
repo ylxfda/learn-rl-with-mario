@@ -71,17 +71,17 @@ Code map (click to open):
   - Value loss (clipped): [ppo.py:227](./ppo.py#L227)
   - Entropy bonus:.py:242](./ppo.py#L242)
   - Gradient clipping: [ppo.py:255](./ppo.py#L255)
-- Actor-Critic forward/evaluate: [networks/networks.py:366](../../networks/networks.py#L366), [networks/networks.py:399](../../networks/networks.py#L399)
+- Actor-Critic forward/evaluate: [networks.py:366](./networks.py#L366), [networks.py:399](./networks.py#L399)
 - Hyperparameters: [config.py:38](../../config.py#L38), [config.py:41](../../config.py#L41), [config.py:42](../../config.py#L42), [config.py:47](../../config.py#L47), [config.py:48](../../config.py#L48), [config.py:55](../../config.py#L55)
 - Logging and saving: logger [utils/logger.py:27](../../utils/logger.py#L27), model I/O [base.py:310](./base.py#L310)
 
 Notes on implementation:
 - Actor-Critic = CNN feature extractor + policy/value heads
-  - Feature extractor: [networks/networks.py:16](../networks/networks.py#L16)
-  - Policy head: [networks/networks.py:137](../networks/networks.py#L137)
-  - Value head: [networks/networks.py:250](../networks/networks.py#L250)
-- Action selection (sampling/argmax): [networks/networks.py:377](../networks/networks.py#L377)
-- Evaluate log-probs/values for updates: [networks/networks.py:399](../networks/networks.py#L399)
+  - Feature extractor: [networks.py:16](./networks.py#L16)
+  - Policy head: [networks.py:137](./networks.py#L137)
+  - Value head: [networks.py:250](./networks.py#L250)
+- Action selection (sampling/argmax): [networks.py:377](./networks.py#L377)
+- Evaluate log-probs/values for updates: [networks.py:399](./networks.py#L399)
 - Trajectory buffer + advantages: [utils/replay_buffer.py:13](../utils/replay_buffer.py#L13), [utils/replay_buffer.py:142](../utils/replay_buffer.py#L142)
 
 Tuning tips:

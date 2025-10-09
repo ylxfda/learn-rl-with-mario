@@ -19,7 +19,7 @@ import numpy as np
 from typing import Dict, Any, Tuple, List
 
 from .base import BaseRLAlgorithm, ModelManager
-from networks.networks import create_actor_critic_network
+from .networks import create_actor_critic_network
 from enviroments.replay_buffer import RolloutBuffer
 from configs.ppo_config import Config
 
