@@ -87,65 +87,43 @@
   - Implement as minimization: $\mathcal{L}_{\mathrm{actor}}= -\mathbb{E}\big[ R_0^{\lambda} / S_{\mathrm{eff}} + \eta\, \mathcal{H}(\pi_{\theta}(\cdot\mid s_t)) \big]$.
 
 **Training Loop (Pseudo Code)**
-```python
-# Replay D stores (x_t, a_t, r_t, c_t) with sequences
-initialize world model φ, actor θ, critic ψ; EMA critic ψ_bar = ψ
-while not done:
-  # 1) Collect experience
-  for env_step in range(E):
-    with torch.no_grad():
-      # use latest policy; optionally warmstart with random actions
-      a_t ~ π_θ(a | s_t) where s_t from filtering posterior q_φ on current traj
-    (x_{t+1}, r_t, done) = env.step(a_t); c_t = 0 if done else 1
-    D.append(x_t, a_t, r_t, c_t)
-
-  # 2) Gradient updates (ρ_train * E updates)
-  for update in range(U):
-    batch = sample_sequences(D, batch_size=B, length=T)
-
-    # 2.a) World model update
-    # Encode and posterior-filter through time
-    h_0 = zeros(); z_0 = zeros()
-    for t in 1..T:
-      e_t = enc_φ(x_t)
-      h_t = f_φ(h_{t-1}, a_{t-1}, z_{t-1})
-      q_t = q_φ(z_t | h_t, x_t)        # posterior
-      p_t = p_φ(z_t | h_t)             # prior
-      z_t ~ q_t                        # posterior sample (straight-through)
-      s_t = (h_t, z_t)
-      x̂_t = dec_φ(s_t); r̂_t = head_r_φ(s_t); ĉ_t = head_c_φ(s_t)
-      accumulate L_img, L_rew, L_cont, L_dyn (balanced KL with free bits)
-    L_world = w_img*L_img + w_rew*L_rew + w_cont*L_cont + β_kl*L_dyn
-    φ ← φ - η_φ * ∇_φ L_world
-
-    # 2.b) Imagine trajectories and compute targets
-    # Start from posterior states detached from gradients
-    s̄_0 = sg[s_T_end_of_chunks]
-    returns = []
-    with torch.no_grad():
-      R = 0
-    for t in 0..H-1:
-      a_t ~ π_θ(a | s̄_t)
-      h̄_{t+1} = f_φ(h̄_t, a_t, z̄_t)
-      z̄_{t+1} ~ p_φ(z | h̄_{t+1})         # prior during imagination
-      s̄_{t+1} = (h̄_{t+1}, z̄_{t+1})
-      r_t = symexp(E[r̂(s̄_t)])            # reward head expectation
-      c_t = sigmoid(head_c_φ(s̄_t))        # continue prob
-      v_{t+1} = v_ψ(s̄_{t+1})              # symexp of critic dist
-      # accumulate λ-returns backward later
-    R^λ = lambda_returns(r, c, v, γ, λ)     # real-space returns
-    S_eff = max(percentile(R^λ, P_high) - percentile(R^λ, P_low), 1)
-
-    # 2.c) Critic update (distributional two-hot on symlog targets)
-    y_t = twohot(symlog(R^λ_t), bins=𝔹)
-    L_critic = CE(y_t, p_ψ(·|s̄_t)); L_ema = KL(p_{ψ_bar}(·|s̄_t) || p_ψ(·|s̄_t))
-    ψ ← ψ - η_ψ * ∇_ψ (L_critic + w_ema*L_ema)
-    ψ_bar ← ρ * ψ_bar + (1-ρ) * ψ
-
-    # 2.d) Actor update (reparameterized gradients through π, no gradients through ψ)
-    J = mean(R^λ_0 / S_eff + η * entropy(π_θ(·|s̄_{0:H-1})))
-    θ ← θ + η_θ * ∇_θ J  # or minimize L_actor = -J
-```
+- Replay buffer $D$ stores sequences $(x_t, a_t, r_t, c_t)$.
+- Initialize world model $\phi$, actor $\theta$, critic $\psi$; initialize EMA critic $\bar{\psi} \leftarrow \psi$.
+- Repeat until training ends:
+  1. Collect experience
+     - For each env step, sample action $a_t \sim \pi_{\theta}(\cdot\mid s_t)$ where $s_t$ is obtained by filtering with the posterior $q_{\phi}$ along the current trajectory.
+     - Step the environment: $(x_{t+1}, r_t, \mathrm{done}) \leftarrow \mathrm{env.step}(a_t)$, set $c_t = \mathbb{1}[\neg\,\mathrm{done}]$, and append $(x_t, a_t, r_t, c_t)$ to $D$.
+  2. Perform gradient updates (per train ratio)
+     - Sample a batch of $B$ sequences of length $T$ from $D$.
+     - World model update (filtering)
+       - For $t=1,\dots,T$:
+         $$\begin{aligned}
+         e_t &= enc_{\phi}(x_t),\\
+         h_t &= f_{\phi}(h_{t-1}, a_{t-1}, z_{t-1}),\\
+         q_t &= q_{\phi}(z_t\mid h_t, x_t),\quad p_t = p_{\phi}(z_t\mid h_t),\\
+         z_t &\sim q_t\ \text{(straight-through)},\quad s_t=(h_t, z_t),\\
+         \hat{x}_t &= dec_{\phi}(s_t),\ \hat{r}_t = p_{\phi}(r_t\mid s_t),\ \hat{c}_t = p_{\phi}(c_t\mid s_t).
+         \end{aligned}$$
+       - Compute $\mathcal{L}_{\mathrm{world}}$ and update $\phi$.
+     - Imagination (start states detached from grads)
+       - Let $\bar{s}_0$ be posterior states from the batch (e.g., last time step), with stop-gradient.
+       - For $\tau=0,\dots,H-1$:
+         $$\begin{aligned}
+         a_\tau &\sim \pi_{\theta}(\cdot\mid \bar{s}_\tau),\\
+         \bar{h}_{\tau+1} &= f_{\phi}(\bar{h}_\tau, a_\tau, \bar{z}_\tau),\\
+         \bar{z}_{\tau+1} &\sim p_{\phi}(z\mid \bar{h}_{\tau+1}),\\
+         \bar{s}_{\tau+1} &= (\bar{h}_{\tau+1}, \bar{z}_{\tau+1}),\\
+         r_\tau &= \operatorname{symexp}(\mathbb{E}[\hat{r}(\bar{s}_\tau)]),\quad c_\tau = \sigma(\hat{c}(\bar{s}_\tau)),\\
+         v_{\tau+1} &= v_{\psi}(\bar{s}_{\tau+1}).
+         \end{aligned}$$
+       - Compute $\lambda$-returns in real space, with $d_\tau = \gamma\, c_\tau$:
+         $$R_\tau^{\lambda} = r_\tau + d_\tau\Big((1-\lambda)\, v_{\tau+1} + \lambda\, R_{\tau+1}^{\lambda}\Big).$$
+       - Return scaling: $S_{\mathrm{eff}} = \max\big(\operatorname{Per}(R^{\lambda}, P_{\text{high}}) - \operatorname{Per}(R^{\lambda}, P_{\text{low}}),\ 1\big)$.
+     - Critic update (distributional two-hot on symlog targets)
+       - Targets $y_\tau = \mathrm{twohot}(\operatorname{symlog}(R_\tau^{\lambda}))$.
+       - Minimize $\mathcal{L}_{\mathrm{critic}}$ and regularize with EMA: $\mathcal{L}_{\mathrm{ema}}=\mathrm{KL}( p_{\bar{\psi}}\Vert p_{\psi})$; update $\psi$ and $\bar{\psi}$.
+     - Actor update (no gradients through $\psi$)
+       - Maximize $\mathbb{E}\big[ R_0^{\lambda} / S_{\mathrm{eff}} + \eta\, \mathcal{H}(\pi_{\theta}(\cdot\mid \bar{s}_\tau)) \big]$; update $\theta$.
 
 **Network Architectures**
 - Encoder $enc_{\phi}$
