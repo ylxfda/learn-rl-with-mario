@@ -19,8 +19,8 @@ except ImportError:
     print("Warning: gym-super-mario-bros not installed. Install with 'pip install gym-super-mario-bros'")
     MARIO_AVAILABLE = False
 
-from utils.preprocessing import MarioWrapper, create_mario_env
-from config import Config
+from enviroments.preprocessing import MarioWrapper, create_mario_env
+from configs.ppo_config import Config
 
 
 class MarioEnvironment:

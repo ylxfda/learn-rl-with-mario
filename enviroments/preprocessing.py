@@ -13,7 +13,7 @@ import numpy as np
 import torch
 from collections import deque
 import gym
-from config import Config
+from configs.ppo_config import Config
 
 class FrameStack:
     """

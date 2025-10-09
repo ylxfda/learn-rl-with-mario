@@ -7,7 +7,7 @@ utilities to compute advantages/returns and iterate mini-batches.
 import torch
 import numpy as np
 from typing import List, Tuple, Dict
-from config import Config
+from configs.ppo_config import Config
 
 
 class RolloutBuffer:

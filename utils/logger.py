@@ -21,7 +21,7 @@ except ImportError:
     print("Warning: TensorBoard not available. Install with 'pip install tensorboard'")
     TENSORBOARD_AVAILABLE = False
 
-from config import Config
+from configs.ppo_config import Config
 
 
 class TrainingLogger:

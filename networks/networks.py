@@ -10,7 +10,7 @@ import torch.nn.functional as F
 import numpy as np
 from typing import Tuple, Dict
 
-from config import Config
+from configs.ppo_config import Config
 
 
 class CNNFeatureExtractor(nn.Module):

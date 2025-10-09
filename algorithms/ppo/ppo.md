@@ -11,11 +11,7 @@ pip install numpy matplotlib opencv-python
 ## Training
 Run PPO training with configurable flags:
 ```bash
-python train.py \
-  --num_envs 8 \
-  --max_episodes 10000 \
-  --save_freq 50 \
-  --log_freq 10
+conda run -n mario_rl python train.py --algo ppo
 ```
 Common flags:
 - `--max_steps`: Stop after a maximum number of environment steps
@@ -31,10 +27,7 @@ Checkpoints are written to `models/`:
 ## Testing
 Evaluate a trained PPO model and render gameplay:
 ```bash
-python test.py \
-  --model_path models/best_ppo_mario_update_100.pth \
-  --episodes 5 \
-  --render
+conda run -n mario_rl python test.py --algo ppo --model_path models/best_ppo_mario_update_100.pth
 ```
 Useful flags:
 - `--world 1-1` or `--worlds 1-1 1-2 ...` for multi-world testing
@@ -69,18 +62,18 @@ Mathematical objective (intuition):
 
 Code map (click to open):
 - Parallel env setup: [train.py:126](../train.py#L126), [enviroments/parallel_envs.py:411](../enviroments/parallel_envs.py#L411), [enviroments/parallel_envs.py:659](../enviroments/parallel_envs.py#L659)
-- Rollout collection: [train.py:243](../train.py#L243) (policy [algorithms/ppo.py:102](../algorithms/ppo.py#L102)), env step [enviroments/parallel_envs.py:497](../enviroments/parallel_envs.py#L497)
-- Compute last values and GAE: last values [train.py:320](../train.py#L320), GAE/returns [utils/replay_buffer.py:142](../utils/replay_buffer.py#L142)
-- PPO update loop: [algorithms/ppo.py:170](../algorithms/ppo.py#L170)
-  - Ratio r(θ): [algorithms/ppo.py:214](../algorithms/ppo.py#L214)
-  - Clipped objective: [algorithms/ppo.py:216](../algorithms/ppo.py#L216)
-  - Policy loss: [algorithms/ppo.py:224](../algorithms/ppo.py#L224)
-  - Value loss (clipped): [algorithms/ppo.py:227](../algorithms/ppo.py#L227)
-  - Entropy bonus: [algorithms/ppo.py:242](../algorithms/ppo.py#L242)
-  - Gradient clipping: [algorithms/ppo.py:255](../algorithms/ppo.py#L255)
-- Actor-Critic forward/evaluate: [networks/networks.py:366](../networks/networks.py#L366), [networks/networks.py:399](../networks/networks.py#L399)
-- Hyperparameters: [config.py:38](../config.py#L38), [config.py:41](../config.py#L41), [config.py:42](../config.py#L42), [config.py:47](../config.py#L47), [config.py:48](../config.py#L48), [config.py:55](../config.py#L55)
-- Logging and saving: logger [utils/logger.py:27](../utils/logger.py#L27), model I/O [algorithms/base.py:310](../algorithms/base.py#L310)
+- Rollout collection: [train.py:243](../../train.py#L243) (policy [ppo.py:102](./ppo.py#L102)), env step [enviroments/parallel_envs.py:497](../../enviroments/parallel_envs.py#L497)
+- Compute last values and GAE: last values [train.py:320](../../train.py#L320), GAE/returns [utils/replay_buffer.py:142](../../utils/replay_buffer.py#L142)
+- PPO update loop: [ppo.py:170](./ppo.py#L170)
+  - Ratio r(θ): [ppo.py:214](./ppo.py#L214)
+  - Clipped objective: [ppo.py:216](./ppo.py#L216)
+  - Policy loss: [ppo.py:224](./ppo.py#L224)
+  - Value loss (clipped): [ppo.py:227](./ppo.py#L227)
+  - Entropy bonus:.py:242](./ppo.py#L242)
+  - Gradient clipping: [ppo.py:255](./ppo.py#L255)
+- Actor-Critic forward/evaluate: [networks/networks.py:366](../../networks/networks.py#L366), [networks/networks.py:399](../../networks/networks.py#L399)
+- Hyperparameters: [config.py:38](../../config.py#L38), [config.py:41](../../config.py#L41), [config.py:42](../../config.py#L42), [config.py:47](../../config.py#L47), [config.py:48](../../config.py#L48), [config.py:55](../../config.py#L55)
+- Logging and saving: logger [utils/logger.py:27](../../utils/logger.py#L27), model I/O [base.py:310](./base.py#L310)
 
 Notes on implementation:
 - Actor-Critic = CNN feature extractor + policy/value heads

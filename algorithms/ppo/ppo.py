@@ -18,10 +18,10 @@ import torch.optim as optim
 import numpy as np
 from typing import Dict, Any, Tuple, List
 
-from algorithms.base import BaseRLAlgorithm, ModelManager
+from .base import BaseRLAlgorithm, ModelManager
 from networks.networks import create_actor_critic_network
-from utils.replay_buffer import RolloutBuffer
-from config import Config
+from enviroments.replay_buffer import RolloutBuffer
+from configs.ppo_config import Config
 
 
 class PPOAlgorithm(BaseRLAlgorithm):
