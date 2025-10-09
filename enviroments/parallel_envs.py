@@ -12,7 +12,7 @@ import time
 import traceback
 
 from .mario_env import create_mario_environment, MARIO_AVAILABLE
-from config import Config
+from configs.ppo_config import Config
 
 
 class SubprocVecEnv:

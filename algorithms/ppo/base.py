@@ -10,7 +10,7 @@ import torch.nn as nn
 import os
 from typing import Dict, Any, Tuple, List
 
-from config import Config
+from configs.ppo_config import Config
 from utils.logger import TrainingLogger
 
 
