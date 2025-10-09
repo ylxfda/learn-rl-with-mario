@@ -5,64 +5,114 @@
 
 **Components, Variables, Parameters**
 - Variables
-  - $x_t$ observation; $a_t$ action; $r_t$ reward; $c_t\in\{0,1\}$ continue (1 if episode not terminated); $\gamma$ discount; $\lambda$ TD-lambda; $H$ imagination horizon.
-  - Deterministic state $h_t$; stochastic discrete latent $z_t$; combined latent state $s_t=(h_t, z_t)$.
-  - Prior over latents $p_{\phi}(z_t\mid h_t)$; posterior $q_{\phi}(z_t\mid h_t, x_t)$; decoder $p_{\phi}(x_t\mid s_t)$; reward head $p_{\phi}(r_t\mid s_t)$; continue head $p_{\phi}(c_t\mid s_t)$.
-  - Actor $\pi_{\theta}(a_t\mid s_t)$; critic value distribution $p_{\psi}(b\mid s_t)$ over bins $b\in\mathbb{B}$.
-  - Stop-gradient operator $\mathrm{sg}[\,\cdot\,]$.
+  - $x_t$: observation at time $t$.
+  - $a_t$: action at time $t$.
+  - $r_t$: reward at time $t$.
+  - $c_t\in\{0,1\}$: continue indicator (1 if episode not terminated).
+  - $\gamma$: discount factor.
+  - $\lambda$: TD-$\lambda$ parameter.
+  - $H$: imagination horizon.
+  - $h_t$: deterministic RSSM state at time $t$.
+  - $z_t$: stochastic discrete latent at time $t$.
+  - $s_t=(h_t,z_t)$: combined latent state at time $t$.
+  - $p_{\phi}(z_t\mid h_t)$: dynamics prior over latents.
+  - $q_{\phi}(z_t\mid h_t,x_t)$: representation posterior over latents.
+  - $p_{\phi}(x_t\mid s_t)$: decoder likelihood of observations.
+  - $p_{\phi}(r_t\mid s_t)$: reward prediction head.
+  - $p_{\phi}(c_t\mid s_t)$: continue prediction head.
+  - $\pi_{\theta}(a_t\mid s_t)$: actor policy.
+  - $p_{\psi}(b\mid s_t)$: critic value distribution over bins $b\in\mathbb{B}$.
+  - $v_{\psi}(s)$: critic value readout $\mathbb{E}_{b\sim p_{\psi}}[\operatorname{symexp}(b)]$.
+  - $\mathrm{sg}[\,\cdot\,]$: stop-gradient operator.
 - World Model (parameters $\phi$)
-  - Encoder $enc_{\phi}: x_t\to e_t$ (embedding).
-  - Sequence model $f_{\phi}: (h_{t-1}, a_{t-1}, z_{t-1})\to h_t$ (GRU-based RSSM core).
-  - Dynamics predictor (prior) $p_{\phi}(z_t\mid h_t)$; Representation (posterior) $q_{\phi}(z_t\mid h_t, x_t)$; $z_t$ is discrete with $G$ groups, $K$ classes per group (straight-through Gumbel-Softmax for training).
-  - Decoder $dec_{\phi}: s_t\to \hat{x}_t$ for input reconstruction.
-  - Reward predictor $p_{\phi}(r_t\mid s_t)$; Continue predictor $p_{\phi}(c_t\mid s_t)$.
+  - $enc_{\phi}$: encoder mapping $x_t\to e_t$ (embedding).
+  - $f_{\phi}$: sequence model $(h_{t-1}, a_{t-1}, z_{t-1})\to h_t$ (GRU-based RSSM core).
+  - $p_{\phi}(z_t\mid h_t)$: dynamics predictor (prior) over $z_t$.
+  - $q_{\phi}(z_t\mid h_t, x_t)$: representation (posterior) over $z_t$ (discrete with $G$ groups, $K$ classes; straight-through Gumbel-Softmax).
+  - $dec_{\phi}$: decoder mapping $s_t\to \hat{x}_t$ (reconstruction).
+  - $p_{\phi}(r_t\mid s_t)$: reward predictor head.
+  - $p_{\phi}(c_t\mid s_t)$: continue predictor head.
 - Actor–Critic (parameters $\theta, \psi$)
-  - Actor policy $\pi_{\theta}(a\mid s)$ (Tanh-Normal for continuous, Categorical for discrete).
-  - Critic $p_{\psi}(b\mid s)$ predicts a discrete distribution over symlog value bins; value readout $v_{\psi}(s)=\mathbb{E}_{b\sim p_{\psi}}[\operatorname{symexp}(b)]$.
+  - $\pi_{\theta}(a\mid s)$: actor policy (Tanh-Normal for continuous, Categorical for discrete).
+  - $p_{\psi}(b\mid s)$: critic distribution over symlog value bins; $v_{\psi}(s)=\mathbb{E}_{b\sim p_{\psi}}[\operatorname{symexp}(b)]$.
 - Transforms
-  - $\operatorname{symlog}(x)=\mathrm{sign}(x)\cdot\log(1+|x|)$; $\operatorname{symexp}(y)=\mathrm{sign}(y)\cdot(\exp(|y|)-1)$.
-  - Two-hot discretization: map scalar target $y$ (in symlog space) to adjacent bin weights $y_{\mathrm{vec}}$ over bins $\mathbb{B}$ for discrete regression.
+  - $\operatorname{symlog}(x)$: $\mathrm{sign}(x)\cdot\log(1+|x|)$ transformation.
+  - $\operatorname{symexp}(y)$: $\mathrm{sign}(y)\cdot(\exp(|y|)-1)$ inverse transform.
+  - $\mathrm{twohot}(y)$: two-hot discretization of scalar $y$ to adjacent bin weights over $\mathbb{B}$.
 - Major symbols (concrete defaults below)
-  - Discount $\gamma$; TD-lambda $\lambda$; imagination horizon $H$.
-  - KL balancing factor $\alpha$ ($0<\alpha<1$); free-bits threshold $\delta_{\mathrm{fb}}$ (per-latent minimal KL); KL scale $\beta_{\mathrm{kl}}$.
-  - Value/reward bins $N_{\mathrm{bins}}$; bin range in symlog space $[b_{\min}, b_{\max}]$.
-  - Actor entropy scale $\eta$; return scaling percentiles $P_{\text{low}}$, $P_{\text{high}}$.
-  - Critic EMA decay $\rho$ and EMA regularizer weight $w_{\mathrm{ema}}$.
-  - Training ratio $\rho_{\text{train}}$ (updates per env step); batch size $B$; sequence length $T$.
-  - Optimizer: learning rate(s) and Adam $\beta$s.
-  - Discrete latent sizes: groups $G$, classes $K$, Gumbel temperature schedule $\tau$.
+  - $\gamma$: discount factor for returns.
+  - $\lambda$: TD-$\lambda$ parameter for returns.
+  - $H$: horizon used for $\text{contdisc}$ discounting.
+  - $\alpha$: KL balancing factor ($0<\alpha<1$).
+  - $\delta_{\mathrm{fb}}$: free-bits threshold per latent group.
+  - $\beta_{\mathrm{kl}}$: KL scale in world model loss.
+  - $N_{\mathrm{bins}}$: number of value/reward bins in symlog space.
+  - $[b_{\min}, b_{\max}]$: symlog bin range.
+  - $P_{\text{low}}$: lower percentile for return scaling.
+  - $P_{\text{high}}$: upper percentile for return scaling.
+  - $\rho$: EMA decay for critic target regularization.
+  - $w_{\mathrm{ema}}$: EMA regularizer weight.
+  - $\rho_{\text{train}}$: train ratio (updates per env step).
+  - $B$: batch size (sequences per update).
+  - $T$: sequence length (timesteps per sequence).
+  - $\beta_1,\beta_2$: Adam momentum parameters.
+  - $G,K,\tau$: discrete latent groups, classes, and Gumbel temperature schedule.
 
 **Hyperparameters (DreamerV3 defaults)**
 - Training schedule
-  - Train ratio $\rho_{\text{train}}$: 32 (varies by suite; e.g., 256–1024 for 100k/1M budgets)
-  - Batch size $B$: 16; sequence length $T$: 64; report length: 32
+  - $\rho_{\text{train}}$: 32 (varies by suite; e.g., 256–1024 for 100k/1M budgets).
+  - $B$: 16 (batch size).
+  - $T$: 64 (sequence length).
+  - $T_{\text{report}}$: 32 (report length).
 - Discounting and horizons
-  - Continue discounting enabled ($\text{contdisc}=\text{True}$); $\gamma = 1 - 1/H$ with $H = 333$ $\Rightarrow$ $\gamma \approx 0.997$
-  - TD-$\lambda$: $\lambda = 0.95$ (for imagination and replay targets)
-  - Imagination length: 15
+  - $\text{contdisc}$: True (use continue-aware discounting).
+  - $H$: 333 (horizon for discounting).
+  - $\gamma$: $1 - 1/H \approx 0.997$.
+  - $\lambda$: 0.95 (for imagination and replay targets).
+  - $H_{\text{imag}}$: 15 (imagination rollout length).
 - Return scaling (fixed-entropy trick)
-  - Percentiles: $P_{\text{low}}=5$, $P_{\text{high}}=95$; $S_{\mathrm{eff}}=\max(\operatorname{Per}(R^{\lambda},95)-\operatorname{Per}(R^{\lambda},5), 1)$
-  - Actor entropy scale $\eta = 3\cdot 10^{-4}$
+  - $P_{\text{low}}$: 5 (lower return percentile).
+  - $P_{\text{high}}$: 95 (upper return percentile).
+  - $S_{\mathrm{eff}}$: $\max(\operatorname{Per}(R^{\lambda},95)-\operatorname{Per}(R^{\lambda},5), 1)$.
+  - $\eta$: $3\cdot 10^{-4}$ (actor entropy scale).
 - Critic stability
-  - EMA/slow value rate: $0.02$ ($\approx$ decay $\rho = 0.98$ applied every step); regularizer weight $w_{\mathrm{ema}} = 1.0$
-  - Value head bins $N_{\mathrm{bins}} = 255$ (symlog two-hot)
+  - $\rho$: 0.98 (EMA decay; equivalent slow value rate 0.02).
+  - $w_{\mathrm{ema}}$: 1.0 (EMA regularizer weight).
+  - $N_{\mathrm{bins}}^{\text{value}}$: 255 (symlog two-hot).
 - Reward and continue heads
-  - Reward bins $N_{\mathrm{bins}} = 255$ (symlog two-hot); Continue head: Bernoulli
+  - $N_{\mathrm{bins}}^{\text{reward}}$: 255 (symlog two-hot).
+  - $p_{\phi}(c\mid s)$: Bernoulli output (BCE loss).
 - World model (RSSM, discrete latents)
-  - Discrete: stoch=32, classes=64 (G=32 groups, K=64 classes)
-  - Deterministic size deter=8192; hidden=1024; blocks=8; unimix=0.01; free_nats=1.0
-  - Prior/obs MLP layers: imglayers=2, obslayers=1, dynlayers=1; act=SiLU; norm=RMS
-  - KL balancing via loss scales: $\text{dyn}=1.0$, $\text{rep}=0.1$ (equivalently $\alpha\approx0.9$ toward prior)
+  - $\text{stoch}$: 32 (number of stochastic groups).
+  - $\text{classes}$: 64 (classes per group).
+  - $G, K$: 32 groups, 64 classes (equivalent to stoch/classes settings).
+  - $\text{deter}$: 8192 (deterministic state size).
+  - $\text{hidden}$: 1024 (MLP hidden size).
+  - $\text{blocks}$: 8 (block-linear groups).
+  - $\text{unimix}$: 0.01 (mixture with uniform for categorical).
+  - $\text{free\_nats}$: 1.0 (free-bits threshold in nats).
+  - $\text{imglayers},\text{obslayers},\text{dynlayers}$: 2, 1, 1 (MLP depth per head).
+  - $\text{act}$: SiLU (nonlinearity); $\text{norm}$: RMSNorm.
+  - $\alpha$: $\approx 0.9$ (effective balance via $\text{dyn}=1.0$, $\text{rep}=0.1$ loss scales).
 - Encoder/Decoder
-  - Encoder: depth=64, mults=[2,3,4,4], layers=3, units=1024, act=SiLU, norm=RMS, kernel=5, symlog=True
-  - Decoder: depth=64, mults=[2,3,4,4], layers=3, units=1024, act=SiLU, norm=RMS, kernel=5, bspace=8
+  - $\text{enc.depth}$: 64 (base channel depth).
+  - $\text{enc.mults}$: $[2,3,4,4]$ (stage multipliers).
+  - $\text{enc.layers}$: 3 (MLP layers after conv trunk).
+  - $\text{enc.units}$: 1024 (MLP width).
+  - $\text{enc.kernel}$: 5 (conv kernel size).
+  - $\text{enc.symlog}$: True (apply symlog to vectors).
+  - $\text{dec.depth}$: 64; $\text{dec.mults}$: $[2,3,4,4]$; $\text{dec.layers}$: 3; $\text{dec.units}$: 1024; $\text{dec.kernel}$: 5; $\text{dec.bspace}$: 8.
 - Actor/Critic networks
-  - Policy: layers=3, units=1024, act=SiLU, minstd=0.1, maxstd=1.0, outscale=0.01, unimix=0.01
-  - Critic: layers=3, units=1024, act=SiLU, bins=$255$, output=$\text{symexp\_twohot}$
+  - $\text{policy.layers}$: 3; $\text{policy.units}$: 1024; $\text{policy.minstd}$: 0.1; $\text{policy.maxstd}$: 1.0; $\text{policy.outscale}$: 0.01; $\text{policy.unimix}$: 0.01.
+  - $\text{value.layers}$: 3; $\text{value.units}$: 1024; $\text{value.bins}$: $255$; $\text{value.output}$: $\text{symexp\_twohot}$.
 - Optimizer
-  - Adam: $\mathrm{lr}=4\cdot 10^{-5}$, $\beta_1=0.9$, $\beta_2=0.999$, $\epsilon=10^{-20}$, global grad clipping (AGC)$=0.3$, weight decay$=0.0$
+  - $\mathrm{lr}$: $4\cdot 10^{-5}$ (Adam learning rate).
+  - $\beta_1,\beta_2$: $0.9, 0.999$ (Adam moments).
+  - $\epsilon$: $10^{-20}$ (Adam epsilon).
+  - $\text{AGC}$: 0.3 (adaptive gradient clipping).
+  - $\text{wd}$: 0.0 (weight decay).
 - Loss weights
-  - rec=1.0, rew=1.0, con=1.0, dyn=1.0, rep=0.1, policy=1.0, value=1.0, repval=0.3
+  - $w_{\mathrm{img}}$: 1.0; $w_{\mathrm{rew}}$: 1.0; $w_{\mathrm{cont}}$: 1.0; $w_{\mathrm{dyn}}$: 1.0; $w_{\mathrm{rep}}$: 0.1; $w_{\mathrm{policy}}$: 1.0; $w_{\mathrm{value}}$: 1.0; $w_{\mathrm{repval}}$: 0.3.
 
 **Losses**
 - World model losses (optimize $\phi$)
