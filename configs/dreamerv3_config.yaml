@@ -1,0 +1,131 @@
+# Configuration for DreamerV3 on Super Mario Bros World 1-1
+# Following the hyperparameters from DreamerV3 paper with adjustments for discrete actions
+
+# Environment settings
+env:
+  name: "SuperMarioBros-1-1-v0"  # Target: beat World 1-1
+  frame_skip: 4                   # Action repeat (standard for Atari-style)
+  frame_stack: 1                  # We handle temporal with RSSM, not frame stacking
+  grayscale: false                # Reduce input dimensionality
+  resize: [64, 64]                # Smaller than Atari (84x84) for faster training
+  action_repeat: 1                # Already handled by frame_skip
+  max_episode_steps: 1000         # ~66 seconds at 60 FPS with skip=4
+
+# World Model Architecture (RSSM)
+model:
+  # State dimensions
+  hidden_size: 512                # Deterministic state h_t (GRU hidden)
+  stoch_size: 32                  # Stochastic state z_t per category
+  discrete_size: 32               # Number of categories (z_t is 32x32 = 1024-dim one-hot)
+  
+  # Encoder (CNN for images -> features)
+  cnn_depth: 32                   # Base number of CNN channels
+  cnn_blocks: 3                   # Number of conv blocks
+  cnn_kernels: [4, 4, 4]          # Kernel sizes
+  cnn_strides: [2, 2, 2]          # Strides (64->32->16->8)
+  
+  # MLP architecture
+  mlp_layers: 4                   # Depth of MLP heads
+  mlp_hidden: 512                 # MLP hidden layer size
+  
+  # Normalization & Activation
+  layer_norm: true                # Use LayerNorm (critical for stability)
+  activation: "SiLU"              # Swish/SiLU activation (DreamerV3 default)
+  
+  # Decoder
+  decoder_cnn_depth: 32           # Decoder CNN channels
+  decoder_mlp_layers: 4
+
+# Training hyperparameters
+training:
+  # Global settings
+  seed: 42
+  device: "cuda"                  # Use GPU
+  num_envs: 1                     # Single environment (can parallelize later)
+  total_steps: 1000000            # Total environment steps (should beat 1-1 in ~200K)
+  
+  ### =================================================================================
+  # Collection phase (real environment interaction)
+  # NOTE: log_every, eval_every, save_every must be multiples of h_collect
+  h_collect: 64                   # Steps per collection (Section 3.1, Alg 1 line 3)
+ ### ==================================================================================
+  
+  # World model training (Section 3.2)
+  batch_size_model: 16            # Number of sequences (B_model)
+  batch_length: 64                # Sequence length L (timesteps per sequence)
+  replay_capacity: 2000000        # Replay buffer size in timesteps
+  replay_min_size: 2500          # Minimum size before training starts
+  prefetch: 4                     # Number of batches to prefetch
+
+  # how many model updates per env step
+  train_ratio: 512                # Train the model once per env step
+  
+  # Imagination & behavior learning (Section 3.3)
+  h_imagine: 15                   # Imagination horizon (Section 3.3)
+  batch_size_actor: 256           # Number of imagined trajectories (B_actor)
+  
+  # Learning rates (Section B.1)
+  lr_model: 1.0e-4                # World model learning rate (α_model)
+  lr_actor: 3.0e-5                # Actor learning rate (α_actor)  
+  lr_critic: 3.0e-5               # Critic learning rate (α_critic)
+  lr_warmup_steps: 0              # No warmup (DreamerV3 uses constant LR)
+  
+  # Discount & bootstrapping (Section 3.3)
+  gamma: 0.997                    # Discount factor γ (high for long episodes)
+  lambda_: 0.95                   # λ-return parameter (TD(λ))
+  tau: 0.02                       # EMA coefficient for target critic (τ)
+  
+  # Loss weights (Equation 2, Section 3.2)
+  beta_pred: 1.0                  # Prediction loss weight (β_pred)
+  beta_dyn: 1.0                   # Dynamics loss weight (β_dyn)
+  beta_rep: 0.1                   # Representation loss weight (β_rep)
+  
+  # KL divergence (Section B.2)
+  free_nats: 1.0                  # Free bits for KL (min KL per dimension)
+  kl_scale: 1.0                   # Overall KL scaling
+  kl_balancing: "both"            # "both" for bidirectional KL (Eq 2)
+  
+  # Actor regularization (Section 3.3)
+  entropy_scale: 1.0e-3             # Entropy bonus for exploration
+  unimix_ratio: 0.01              # Unimix exploration (1% uniform actions)
+  
+  # Critic (distributional value learning, Section B.3)
+  critic_type: "twohot"           # Use two-hot encoding (DreamerV3)
+  value_min: -20                  # Min value for discretization (symlog space)
+  value_max: 20                   # Max value for discretization
+  num_bins: 255                   # Number of bins for value distribution
+
+# Optimization settings
+optimization:
+  optimizer: "Adam"               # Adam optimizer
+  grad_clip: 100.0                # Gradient clipping (prevent exploding gradients)
+  weight_decay: 0.0               # No weight decay (DreamerV3 doesn't use it)
+  eps: 1.0e-8                       # Adam epsilon
+  mixed_precision: true           # Use AMP for faster training on 5090
+  compile_model: true             # PyTorch 2.0 compile for speedup
+  
+# Logging & Evaluation
+logging:
+  log_dir: "./logs"               # Directory for logs
+
+  ### =================================================================================
+  # IMPORTANT: log_every, eval_every, save_every must be multiples of h_collect (64)
+  # to ensure flush/eval/save are triggered correctly (uses modulo check)
+  log_every: 1024                 # Log metrics every N steps (64*16)
+  eval_every: 10240               # Run evaluation every N steps (64*160)
+  save_every: 51200               # Save checkpoint every N steps (64*800)
+  video_every: 51200              # Save video every N steps (64*800)
+  num_eval_episodes: 10           # Episodes for evaluation
+  ### =================================================================================
+  
+  # Logging platforms
+  use_tensorboard: true
+  use_wandb: false                # Set to true if using Weights & Biases
+  wandb_project: "dreamerv3-mario"
+  wandb_entity: null              # Your W&B username
+
+# System settings
+system:
+  num_workers: 4                  # DataLoader workers for replay buffer
+  pin_memory: true                # Pin memory for faster GPU transfer
+  deterministic: false            # Set true for reproducibility (slower)

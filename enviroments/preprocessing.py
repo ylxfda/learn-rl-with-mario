@@ -303,11 +303,222 @@ def frames_to_tensor(frames, device=None):
 def tensor_to_frames(tensor):
     """
     Convert PyTorch tensor back to numpy array.
-    
+
     Args:
         tensor (torch.Tensor): input tensor
-        
+
     Returns:
         np.array: numpy array
     """
     return tensor.cpu().numpy()
+
+
+# ============================================================================
+# DreamerV3-specific Preprocessing
+# ============================================================================
+
+def preprocess_frame_dreamerv3(frame, size=64, grayscale=True):
+    """
+    Preprocess frame for DreamerV3.
+
+    DreamerV3 requirements:
+    - Configurable grayscale or RGB
+    - uint8 format [0, 255] (not normalized)
+    - No frame stacking (RSSM handles temporal modeling)
+
+    Args:
+        frame (np.array): raw frame, typically (240, 256, 3)
+        size (int): target size (default 64x64)
+        grayscale (bool): convert to grayscale (default True)
+
+    Returns:
+        np.array: (C, H, W) uint8 in [0, 255], where C=1 for grayscale, C=3 for RGB
+    """
+    # Crop HUD
+    frame = frame[30:210, :]
+
+    # Convert to grayscale if requested
+    if grayscale:
+        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+
+    # Resize
+    frame = cv2.resize(frame, (size, size), interpolation=cv2.INTER_AREA)
+
+    # Transpose to (C, H, W) format
+    if grayscale:
+        if frame.ndim == 2:
+            frame = np.expand_dims(frame, axis=0)  # (1, H, W)
+    else:
+        # RGB: (H, W, C) -> (C, H, W)
+        frame = np.transpose(frame, (2, 0, 1))
+
+    return frame.astype(np.uint8)
+
+
+class MarioDreamerV3Wrapper(gym.Wrapper):
+    """
+    Mario wrapper specifically for DreamerV3.
+
+    Differences from standard MarioWrapper:
+    - No frame stacking (RSSM handles temporal modeling)
+    - Returns uint8 [0, 255] instead of float32 [0, 1]
+    - 64x64 resolution instead of 84x84
+    - Frame skip configurable via parameter
+    - Supports both grayscale and RGB
+    """
+
+    def __init__(self, env, frame_skip=4, size=64, grayscale=True):
+        """
+        Initialize DreamerV3 wrapper.
+
+        Args:
+            env: base Mario environment
+            frame_skip (int): number of frames to skip (action repeat)
+            size (int): image size (default 64x64)
+            grayscale (bool): use grayscale (default True)
+        """
+        super(MarioDreamerV3Wrapper, self).__init__(env)
+
+        self.frame_skip = frame_skip
+        self.size = size
+        self.grayscale = grayscale
+
+        # Redefine observation space
+        channels = 1 if grayscale else 3
+        self.observation_space = gym.spaces.Box(
+            low=0,
+            high=255,
+            shape=(channels, size, size),  # (C, H, W) format
+            dtype=np.uint8
+        )
+
+        # Reward shaping variables
+        self.prev_x_pos = 0
+        self.prev_time = 400
+
+    def reset(self, **kwargs):
+        """
+        Reset and return initial processed state.
+
+        Returns:
+            np.array: (C, H, W) uint8, where C=1 for grayscale, C=3 for RGB
+        """
+        obs = self.env.reset(**kwargs)
+
+        # Preprocess
+        processed = preprocess_frame_dreamerv3(obs, self.size, self.grayscale)
+
+        # Reset shaping state
+        self.prev_x_pos = 0
+        self.prev_time = 400
+
+        return processed
+
+    def step(self, action):
+        """
+        Step with frame skip and reward shaping.
+
+        Args:
+            action: action to perform
+
+        Returns:
+            tuple: (state, reward, done, info)
+        """
+        total_reward = 0
+
+        # Frame skip
+        for _ in range(self.frame_skip):
+            obs, reward, done, info = self.env.step(action)
+            total_reward += reward
+
+            if done:
+                break
+
+        # Preprocess
+        processed = preprocess_frame_dreamerv3(obs, self.size, self.grayscale)
+
+        # Reward shaping
+        shaped_reward = self._shape_reward(total_reward, info, done)
+
+        return processed, shaped_reward, done, info
+
+    def _shape_reward(self, reward, info, done):
+        """
+        Reward shaping for DreamerV3.
+
+        Similar to standard wrapper but adapted for DreamerV3's learning dynamics.
+
+        Args:
+            reward (float): original reward
+            info (dict): env info
+            done (bool): episode done
+
+        Returns:
+            float: shaped reward
+        """
+        shaped_reward = reward
+
+        # Current state
+        current_x = info.get('x_pos', 0)
+        current_time = info.get('time', 400)
+
+        # Progress reward
+        progress = current_x - self.prev_x_pos
+        shaped_reward += progress / 100.0  # Normalize
+
+        # Time penalty
+        time_penalty = (self.prev_time - current_time) / 1000.0
+        shaped_reward -= time_penalty * 0.1
+
+        # Death penalty
+        if done and not info.get('flag_get', False):
+            if info.get('life', 2) < 2:
+                shaped_reward -= 5.0
+
+        # Success bonus
+        if info.get('flag_get', False):
+            shaped_reward += 50.0
+
+        # Small constant
+        shaped_reward += 0.01
+
+        # Update state
+        self.prev_x_pos = current_x
+        self.prev_time = current_time
+
+        return shaped_reward
+
+
+def create_mario_env_dreamerv3(world='1-1', stage=None, frame_skip=4, size=64, grayscale=True):
+    """
+    Factory for DreamerV3 Mario environment.
+
+    Args:
+        world (str): world id like '1-1'
+        stage (str): optional stage
+        frame_skip (int): frame skip amount
+        size (int): image size
+        grayscale (bool): use grayscale (default True)
+
+    Returns:
+        gym.Env: wrapped environment for DreamerV3
+    """
+    import gym_super_mario_bros
+    from nes_py.wrappers import JoypadSpace
+    from gym_super_mario_bros.actions import SIMPLE_MOVEMENT
+
+    # Base env
+    if stage:
+        env_name = f'SuperMarioBros-{world}-{stage}-v0'
+    else:
+        env_name = f'SuperMarioBros-{world}-v0'
+
+    env = gym_super_mario_bros.make(env_name)
+
+    # Simple action space (7 actions)
+    env = JoypadSpace(env, SIMPLE_MOVEMENT)
+
+    # Apply DreamerV3 wrapper
+    env = MarioDreamerV3Wrapper(env, frame_skip=frame_skip, size=size, grayscale=grayscale)
+
+    return env
