@@ -1,0 +1,112 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Train DreamerV3",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/train_dreamerv3.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--config",
+                "configs/dreamerv3_config.yaml"
+            ],
+            "justMyCode": false,
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            }
+        },
+        {
+            "name": "Train DreamerV3 (Resume from Checkpoint)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/train_dreamerv3.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--config",
+                "configs/dreamerv3_config.yaml",
+                "--checkpoint",
+                "logs/checkpoints/checkpoint_100000.pt"
+            ],
+            "justMyCode": false,
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            }
+        },
+        {
+            "name": "Eval DreamerV3 Only",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/train_dreamerv3.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--config",
+                "configs/dreamerv3_config.yaml",
+                "--checkpoint",
+                "logs/checkpoints/checkpoint_100000.pt",
+                "--eval-only",
+                "--num-eval-episodes",
+                "5"
+            ],
+            "justMyCode": false,
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            }
+        },
+        {
+            "name": "Debug DreamerV3 Trainer Module",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "algorithms.dreamer_v3.training.trainer",
+            "console": "integratedTerminal",
+            "args": [
+                "--config",
+                "configs/dreamerv3_config.yaml"
+            ],
+            "justMyCode": false,
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            }
+        },
+        {
+            "name": "Debug DreamerV3 (Short Run)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/train_dreamerv3.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--config",
+                "configs/dreamerv3_config.yaml"
+            ],
+            "justMyCode": false,
+            "env": {
+                "PYTHONUNBUFFERED": "1",
+                "CUDA_LAUNCH_BLOCKING": "1"
+            },
+            "preLaunchTask": "Create Debug Config"
+        },
+        {
+            "name": "Python: Current File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            }
+        },
+        {
+            "name": "Python: Current File with Args",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "args": [],
+            "justMyCode": false,
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            }
+        }
+    ]
+}

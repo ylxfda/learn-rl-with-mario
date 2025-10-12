@@ -117,7 +117,7 @@ class DreamerV3Trainer:
         
         # Mixed precision training
         self.use_amp = self.config['optimization']['mixed_precision']
-        self.scaler = torch.cuda.amp.GradScaler() if self.use_amp else None
+        self.scaler = torch.amp.GradScaler('cuda') if self.use_amp else None
         
         # Logger
         self.logger = Logger(self.config)
