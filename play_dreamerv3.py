@@ -55,12 +55,14 @@ def play_mario(checkpoint_path: str, config_path: str, num_episodes: int = 1,
 
     # Load checkpoint
     print(f"\nLoading checkpoint: {checkpoint_path}")
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     world_model.load_state_dict(checkpoint['world_model'])
     actor.load_state_dict(checkpoint['actor'])
 
     print(f"  Checkpoint from step: {checkpoint['global_step']}")
     print(f"  Episodes completed: {checkpoint['episode_count']}")
+    if 'last_eval_reward' in checkpoint and checkpoint['last_eval_reward'] is not None:
+        print(f"  Last eval reward: {checkpoint['last_eval_reward']:.2f}")
 
     # Set to eval mode
     world_model.eval()

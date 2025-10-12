@@ -125,6 +125,7 @@ class DreamerV3Trainer:
         # Training state
         self.global_step = 0
         self.episode_count = 0
+        self.last_eval_reward = None  # Track last evaluation reward for checkpoint naming
         
         # For online collection
         self.current_obs = None
@@ -499,13 +500,15 @@ class DreamerV3Trainer:
             if self.global_step % self.config['logging']['log_every'] == 0:
                 self.logger.flush(self.global_step)
             
-            # Evaluation
-            if self.global_step % self.config['logging']['eval_every'] == 0:
-                self.evaluate()
-            
-            # Save checkpoint
-            if self.global_step % self.config['logging']['save_every'] == 0:
-                self.save_checkpoint()
+            # Only start evaluation and checkpointing after initial replay fill
+            if self.global_step >= self.config['training']['replay_min_size']:
+                # Evaluation
+                if self.global_step % self.config['logging']['eval_every'] == 0:
+                    self.evaluate()
+                
+                # Save checkpoint
+                if self.global_step % self.config['logging']['save_every'] == 0:
+                    self.save_checkpoint()
         
         pbar.close()
         print("\nTraining completed!")
@@ -575,16 +578,20 @@ class DreamerV3Trainer:
                 eval_max_x.append(info['episode']['max_x_pos'])
                 eval_success.append(info['episode']['flag_get'])
         
+        # Calculate mean reward and store it
+        mean_reward = np.mean(eval_rewards)
+        self.last_eval_reward = mean_reward
+
         # Log evaluation results
         self.logger.log_evaluation({
-            'mean_reward': np.mean(eval_rewards),
+            'mean_reward': mean_reward,
             'mean_length': np.mean(eval_lengths),
             'mean_max_x': np.mean(eval_max_x),
             'success_rate': np.mean(eval_success)
         }, self.global_step)
-        
+
         print(f"\n[Eval @ step {self.global_step}]")
-        print(f"  Mean reward: {np.mean(eval_rewards):.2f}")
+        print(f"  Mean reward: {mean_reward:.2f}")
         print(f"  Mean length: {np.mean(eval_lengths):.1f}")
         print(f"  Mean max X: {np.mean(eval_max_x):.1f}")
         print(f"  Success rate: {np.mean(eval_success)*100:.1f}%")
@@ -603,12 +610,19 @@ class DreamerV3Trainer:
         """Save model checkpoint."""
         checkpoint_dir = Path(self.config['logging']['log_dir']) / 'checkpoints'
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        
-        checkpoint_path = checkpoint_dir / f'checkpoint_{self.global_step}.pt'
-        
+
+        # Create filename with step and optional eval reward
+        if self.last_eval_reward is not None:
+            # Include eval reward in filename for easy identification (integer only)
+            checkpoint_path = checkpoint_dir / f'checkpoint_step{self.global_step}_reward{int(self.last_eval_reward)}.pt'
+        else:
+            # No evaluation run yet, just use step number
+            checkpoint_path = checkpoint_dir / f'checkpoint_step{self.global_step}.pt'
+
         torch.save({
             'global_step': self.global_step,
             'episode_count': self.episode_count,
+            'last_eval_reward': self.last_eval_reward,
             'world_model': self.world_model.state_dict(),
             'actor': self.actor.state_dict(),
             'critic': self.critic.state_dict(),
@@ -617,15 +631,16 @@ class DreamerV3Trainer:
             'optimizer_actor': self.optimizer_actor.state_dict(),
             'optimizer_critic': self.optimizer_critic.state_dict(),
         }, checkpoint_path)
-        
+
         print(f"\nCheckpoint saved: {checkpoint_path}")
     
     def load_checkpoint(self, checkpoint_path: str):
         """Load model checkpoint."""
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
-        
+        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+
         self.global_step = checkpoint['global_step']
         self.episode_count = checkpoint['episode_count']
+        self.last_eval_reward = checkpoint.get('last_eval_reward', None)  # Backward compatible
         self.world_model.load_state_dict(checkpoint['world_model'])
         self.actor.load_state_dict(checkpoint['actor'])
         self.critic.load_state_dict(checkpoint['critic'])
@@ -633,9 +648,11 @@ class DreamerV3Trainer:
         self.optimizer_model.load_state_dict(checkpoint['optimizer_model'])
         self.optimizer_actor.load_state_dict(checkpoint['optimizer_actor'])
         self.optimizer_critic.load_state_dict(checkpoint['optimizer_critic'])
-        
+
         print(f"Checkpoint loaded: {checkpoint_path}")
         print(f"  Resuming from step {self.global_step}")
+        if self.last_eval_reward is not None:
+            print(f"  Last eval reward: {self.last_eval_reward:.2f}")
 
 
 # ============================================================================
