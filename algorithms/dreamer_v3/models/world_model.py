@@ -598,11 +598,10 @@ class RSSM(nn.Module):
         # L_rep: Representation Loss (stop gradient on prior so only posterior is updated)
         # L_rep = KL[sg(q) || p]
         # ====================================================================
-        kl_forward = torch.sum(
+        L_rep = torch.sum(
             post_probs * (torch.log(post_probs + 1e-8) - torch.log(sg(prior_probs) + 1e-8)),
             dim=-1
         ).mean()
-        L_rep = kl_forward
         
         # ====================================================================
         # Total Loss
