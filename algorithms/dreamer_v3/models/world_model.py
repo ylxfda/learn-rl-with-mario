@@ -373,15 +373,14 @@ class RSSM(nn.Module):
             z_post = z_post_dist.sample()  # (B, stoch_size, discrete_size)
             z_prior = z_prior_dist.sample()  # For KL computation
             
-            # Store
+            # Update deterministic state for current timestep so reconstruction uses freshest features
+            # h_{t+1} = f_φ(h_t, z_t, a_t)
+            h = self.dynamics(h, z_post, a_t)
+            
+            # Store updated states
             h_seq.append(h)
             z_post_seq.append(z_post)
             z_prior_seq.append(z_prior)
-            
-            # Update deterministic state for next timestep
-            # h_{t+1} = f_φ(h_t, z_t, a_t)
-            if t < T - 1:  # Don't update after last timestep
-                h = self.dynamics(h, z_post, a_t)
         
         # Stack sequences
         h_seq = torch.stack(h_seq, dim=1)  # (B, T, hidden_size)
@@ -572,30 +571,38 @@ class RSSM(nn.Module):
         post_dist_flat = self.encode(h_flat, x_flat)
         prior_dist_flat = self.prior(h_flat)
         
-        # KL divergence per categorical
-        kl_per_cat = post_dist_flat.kl_divergence(prior_dist_flat)  # (B*T, stoch_size)
+        post_probs = post_dist_flat.probs
+        prior_probs = prior_dist_flat.probs
         
-        # Apply free bits
-        kl_per_cat = free_bits_kl(kl_per_cat, free_nats=self.config['training']['free_nats'])
+        # KL divergence per categorical for logging (no free bits)
+        kl_per_cat_raw = torch.sum(
+            post_probs * (torch.log(post_probs + 1e-8) - torch.log(prior_probs + 1e-8)),
+            dim=-1
+        )
         
-        # Mean over categoricals and batch
-        L_dyn = kl_per_cat.mean()
+        # Apply free bits for reporting
+        kl_per_cat = free_bits_kl(kl_per_cat_raw, free_nats=self.config['training']['free_nats'])
         
         # ====================================================================
-        # L_rep: Representation Loss (bidirectional KL with stop-gradient)
+        # Dynamics loss: stop gradient on posterior so only prior is updated
+        # L_dyn = KL[q || sg(p)]
         # ====================================================================
-        # L_rep = KL[sg(q) || p] + KL[q || sg(p)]
-        # This prevents posterior/prior collapse
+        kl_dyn = torch.sum(
+            sg(post_probs) * (torch.log(sg(post_probs) + 1e-8) - torch.log(prior_probs + 1e-8)),
+            dim=-1
+        )
+        kl_dyn = free_bits_kl(kl_dyn, free_nats=self.config['training']['free_nats'])
+        L_dyn = kl_dyn.mean()
         
-        # Forward KL: KL[q || sg(p)]
-        prior_dist_sg = self.prior(sg(h_flat))
-        kl_forward = post_dist_flat.kl_divergence(prior_dist_sg).mean()
-        
-        # Backward KL: KL[sg(q) || p]
-        post_dist_sg_flat = self.encode(sg(h_flat), x_flat)
-        kl_backward = post_dist_sg_flat.kl_divergence(prior_dist_flat).mean()
-        
-        L_rep = kl_forward + kl_backward
+        # ====================================================================
+        # L_rep: Representation Loss (stop gradient on prior so only posterior is updated)
+        # L_rep = KL[sg(q) || p]
+        # ====================================================================
+        kl_forward = torch.sum(
+            post_probs * (torch.log(post_probs + 1e-8) - torch.log(sg(prior_probs) + 1e-8)),
+            dim=-1
+        ).mean()
+        L_rep = kl_forward
         
         # ====================================================================
         # Total Loss
@@ -615,5 +622,6 @@ class RSSM(nn.Module):
             'recon_loss': recon_loss.mean(),
             'reward_loss': reward_loss.mean(),
             'continue_loss': continue_loss.mean(),
-            'kl_divergence': kl_per_cat.mean()
+            'kl_divergence': kl_per_cat.mean(),
+            'kl_raw': kl_per_cat_raw.mean()
         }
