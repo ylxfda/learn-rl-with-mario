@@ -58,7 +58,7 @@ training:
   prefetch: 4                     # Number of batches to prefetch
 
   # how many model updates per env step
-  train_ratio: 512                # Train the model once per env step
+  train_ratio: 128                # Train the model once per env step
   
   # Imagination & behavior learning (Section 3.3)
   h_imagine: 15                   # Imagination horizon (Section 3.3)
