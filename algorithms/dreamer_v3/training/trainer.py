@@ -9,12 +9,13 @@ Implements the three-phase training process:
 Follows Algorithm 1 from DreamerV3 paper.
 """
 
+import random  # Reservoir sampling for selecting representative recon videos
 import torch
 import torch.nn.functional as F
 import numpy as np
 import yaml
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 from tqdm import tqdm
 
 from algorithms.dreamer_v3.models.world_model import RSSM
@@ -536,47 +537,90 @@ class DreamerV3Trainer:
         eval_max_x = []
         eval_success = []
         
-        for _ in range(num_episodes):
+        # Decide whether to record reconstruction videos for this evaluation run
+        log_recon = (
+            self.config['logging'].get('log_reconstruction_videos', False)
+            and getattr(self.logger, 'use_tensorboard', False)
+        )
+        max_recon = self.config['logging'].get('reconstruction_video_episodes', 0)
+        fps = self.config['logging'].get('reconstruction_video_fps', 12)
+        if max_recon <= 0:
+            log_recon = False
+        recon_videos: List[torch.Tensor] = []  # Buffer of reconstruction videos chosen for logging
+        selected_indices = set()
+        if log_recon:
+            num_selected = min(max_recon, num_episodes)
+            if num_selected > 0:
+                selected_indices = set(random.sample(range(num_episodes), num_selected))
+        
+        for episode_idx in range(num_episodes):
             obs = self.env.reset()
             h = torch.zeros(1, self.world_model.hidden_size, device=self.device)
-            
-            with torch.no_grad():
-                obs_tensor = torch.from_numpy(obs).float().unsqueeze(0).to(self.device) / 255.0
-                z_dist = self.world_model.encode(h, obs_tensor)
-                z = z_dist.sample()
             
             episode_reward = 0
             episode_length = 0
             done = False
+            info = {}
+            
+            keep_video = episode_idx in selected_indices
+
+            # Only cache frames if the episode was selected to avoid redundant decoding/memory use
+            episode_truth_frames: Optional[List[torch.Tensor]] = [] if keep_video else None
+            episode_recon_frames: Optional[List[torch.Tensor]] = [] if keep_video else None
             
             while not done:
+                with torch.no_grad():
+                    # Encode current observation to obtain posterior state used for action selection
+                    obs_tensor = torch.from_numpy(obs).float().unsqueeze(0).to(self.device) / 255.0
+                    z_dist = self.world_model.encode(h, obs_tensor)
+                    z = z_dist.mode()
+                    recon = self.world_model.decode(h, z)
+                
+                if keep_video and episode_truth_frames is not None and episode_recon_frames is not None:
+                    # Cache truth and reconstruction frames (uint8) for later video assembly
+                    truth_frame = torch.clamp(obs_tensor.squeeze(0), 0.0, 1.0)
+                    recon_frame = torch.clamp(recon.squeeze(0), 0.0, 1.0)
+                    episode_truth_frames.append((truth_frame * 255.0).to(torch.uint8).cpu())
+                    episode_recon_frames.append((recon_frame * 255.0).to(torch.uint8).cpu())
+                
                 # Select action (deterministic for evaluation)
                 with torch.no_grad():
                     action_idx, _ = self.actor.get_action(h, z, deterministic=True)
                     action_idx = action_idx.item()
                 
                 # Step environment
-                obs, reward, done, info = self.env.step(action_idx)
+                next_obs, reward, done, info = self.env.step(action_idx)
                 episode_reward += reward
                 episode_length += 1
                 
                 if not done:
                     with torch.no_grad():
-                        obs_tensor = torch.from_numpy(obs).float().unsqueeze(0).to(self.device) / 255.0
-                        z_dist = self.world_model.encode(h, obs_tensor)
-                        z = z_dist.sample()
-                        
                         action_onehot = F.one_hot(
                             torch.tensor([action_idx], device=self.device),
                             num_classes=self.env.action_size
                         ).float()
                         h = self.world_model.dynamics(h, z, action_onehot)
+                    obs = next_obs
+                else:
+                    obs = next_obs
             
             eval_rewards.append(episode_reward)
             eval_lengths.append(episode_length)
             if 'episode' in info:
                 eval_max_x.append(info['episode']['max_x_pos'])
                 eval_success.append(info['episode']['flag_get'])
+            else:
+                eval_max_x.append(0.0)
+                eval_success.append(0.0)
+            
+            if keep_video and episode_truth_frames and episode_recon_frames:
+                # Convert stacked frames to a TensorBoard-ready video (truth / recon / difference)
+                video = self._build_reconstruction_video(
+                    episode_truth_frames,
+                    episode_recon_frames
+                )
+                if video is not None:
+                    recon_videos.append(video)
         
         # Calculate mean reward and store it
         mean_reward = np.mean(eval_rewards)
@@ -595,12 +639,56 @@ class DreamerV3Trainer:
         print(f"  Mean length: {np.mean(eval_lengths):.1f}")
         print(f"  Mean max X: {np.mean(eval_max_x):.1f}")
         print(f"  Success rate: {np.mean(eval_success)*100:.1f}%")
+        
+        if log_recon and recon_videos:
+            for idx, video in enumerate(recon_videos):
+                # Final log to TensorBoard: each video is three stacked rows (truth/model/diff)
+                self.logger.log_video(
+                    f"eval/reconstruction_{idx}",
+                    video,
+                    self.global_step,
+                    fps=fps
+                )
 
         # Reset collection state after evaluation
         # The environment is left in a 'done' state after eval, which breaks collection
         self.current_obs = None
         self.current_h = None
         self.current_z = None
+
+    def _build_reconstruction_video(
+        self,
+        truth_frames: List[torch.Tensor],
+        recon_frames: List[torch.Tensor]
+    ) -> Optional[torch.Tensor]:
+        """
+        Stack true, reconstructed, and difference frames into a single video.
+
+        Args:
+            truth_frames: List of tensors (C, H, W) in uint8
+            recon_frames: List of tensors (C, H, W) in uint8
+
+        Returns:
+            Tensor of shape (T, C, 3*H, W) in uint8 or None if inputs invalid.
+        """
+        if not truth_frames or len(truth_frames) != len(recon_frames):
+            return None
+
+        truth = torch.stack(truth_frames, dim=0).float() / 255.0
+        recon = torch.stack(recon_frames, dim=0).float() / 255.0
+        # Highlight reconstruction error by doubling differences (values remain in [0, 1])
+        diff = torch.clamp(torch.abs(recon - truth) * 2.0, 0.0, 1.0)
+
+        if truth.shape[1] == 1:
+            # TensorBoard expects RGB videos; replicate grayscale channel if needed
+            truth = truth.repeat(1, 3, 1, 1)
+            recon = recon.repeat(1, 3, 1, 1)
+            diff = diff.repeat(1, 3, 1, 1)
+
+        stacked = torch.cat([truth, recon, diff], dim=2)  # Stack vertically: truth / recon / diff
+        stacked = torch.clamp(stacked, 0.0, 1.0)
+
+        return (stacked * 255.0).to(torch.uint8).cpu()
     
     # ========================================================================
     # Checkpointing

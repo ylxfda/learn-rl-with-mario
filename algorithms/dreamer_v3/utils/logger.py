@@ -11,7 +11,7 @@ Supports:
 import torch
 from torch.utils.tensorboard import SummaryWriter
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Union
 import numpy as np
 
 
@@ -196,6 +196,46 @@ class Logger:
         if self.use_wandb:
             import wandb
             wandb.log(metrics, step=step)
+
+    def log_video(
+        self,
+        tag: str,
+        video: Union[torch.Tensor, np.ndarray],
+        step: int,
+        fps: int = 12
+    ):
+        """
+        Log a video directly to TensorBoard.
+
+        Args:
+            tag: TensorBoard tag (e.g., "eval/reconstruction_0")
+            video: Video tensor with shape (T, C, H, W) or (1, T, C, H, W)
+                   Values can be uint8 [0, 255] or float [0, 1].
+            step: Global training step
+            fps: Playback FPS for TensorBoard
+        """
+        if not self.use_tensorboard:
+            return
+
+        if isinstance(video, np.ndarray):
+            tensor = torch.from_numpy(video)
+        else:
+            tensor = video.detach()
+
+        tensor = tensor.cpu()
+
+        if tensor.ndim == 4:
+            # Expand missing batch dimension expected by add_video
+            tensor = tensor.unsqueeze(0)
+        elif tensor.ndim != 5:
+            raise ValueError(f"Video tensor must have 4 or 5 dims, got shape {tuple(tensor.shape)}")
+
+        if tensor.dtype != torch.uint8:
+            # Convert floating videos in [0,1] to uint8 per TensorBoard requirements
+            tensor = torch.clamp(tensor, 0.0, 1.0)
+            tensor = (tensor * 255.0).to(torch.uint8)
+
+        self.tb_writer.add_video(tag, tensor, step, fps=fps)
     
     def close(self):
         """Close all loggers."""

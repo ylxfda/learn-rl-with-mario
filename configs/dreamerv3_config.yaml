@@ -116,6 +116,9 @@ logging:
   save_every: 256               # Save checkpoint every N steps (64*800)
   video_every: 256              # Save video every N steps (64*800)
   num_eval_episodes: 10           # Episodes for evaluation
+  log_reconstruction_videos: true # Enable logging of truth/model/diff videos during eval
+  reconstruction_video_episodes: 3 # Randomly select up to this many episodes per eval for videos
+  reconstruction_video_fps: 12     # Playback FPS when TensorBoard renders the video
   ### =================================================================================
   
   # Logging platforms
