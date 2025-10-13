@@ -54,7 +54,7 @@ training:
   batch_size_model: 16            # Number of sequences (B_model)
   batch_length: 64                # Sequence length L (timesteps per sequence)
   replay_capacity: 2000000        # Replay buffer size in timesteps
-  replay_min_size: 2500          # Minimum size before training starts
+  replay_min_size: 2048          # Minimum size before training starts
   prefetch: 4                     # Number of batches to prefetch
 
   # how many model updates per env step
@@ -111,10 +111,10 @@ logging:
   ### =================================================================================
   # IMPORTANT: log_every, eval_every, save_every must be multiples of h_collect (64)
   # to ensure flush/eval/save are triggered correctly (uses modulo check)
-  log_every: 1024                 # Log metrics every N steps (64*16)
-  eval_every: 10240               # Run evaluation every N steps (64*160)
-  save_every: 51200               # Save checkpoint every N steps (64*800)
-  video_every: 51200              # Save video every N steps (64*800)
+  log_every: 64                 # Log metrics every N steps (64*16)
+  eval_every: 256               # Run evaluation every N steps (64*160)
+  save_every: 256               # Save checkpoint every N steps (64*800)
+  video_every: 256              # Save video every N steps (64*800)
   num_eval_episodes: 10           # Episodes for evaluation
   ### =================================================================================
   
