@@ -12,12 +12,104 @@ Key features:
 
 import numpy as np
 import torch
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, List
 from collections import deque
+from dataclasses import dataclass, field
 import json
 import os
 from PIL import Image
 import cv2
+
+
+@dataclass
+class EpisodeInfo:
+    """Metadata for a completed episode stored in the buffer."""
+    episode_id: int
+    start_idx: int
+    length: int
+
+
+@dataclass
+class Segment:
+    """Contiguous chunk of experience belonging to a single episode."""
+    observations: np.ndarray  # (L, C, H, W)
+    actions: np.ndarray       # (L, action_size)
+    rewards: np.ndarray       # (L,)
+    continues: np.ndarray     # (L,)
+    is_first: np.ndarray      # (L,) -> bool (marks episode boundary at t==0)
+
+    @property
+    def length(self) -> int:
+        return self.observations.shape[0]
+
+
+@dataclass
+class RollState:
+    """Rolling buffer that keeps enough steps to serve training chunks."""
+    segments: deque = field(default_factory=deque)
+    offset: int = 0  # Number of consumed steps within the first segment
+    total_steps: int = 0  # Available steps after accounting for offset
+
+    def available_steps(self) -> int:
+        return self.total_steps
+
+    def append_segment(self, segment: Segment) -> None:
+        if segment.length == 0:
+            return
+        # Keep segments in temporal order; we only append full episodes.
+        self.segments.append(segment)
+        self.total_steps += segment.length
+
+    def extract_chunk(self, length: int) -> Dict[str, np.ndarray]:
+        if length > self.total_steps:
+            raise ValueError(
+                f"Requested {length} steps, but only {self.total_steps} available."
+            )
+
+        obs_parts: List[np.ndarray] = []
+        act_parts: List[np.ndarray] = []
+        rew_parts: List[np.ndarray] = []
+        cont_parts: List[np.ndarray] = []
+        first_parts: List[np.ndarray] = []
+
+        remaining = length
+
+        while remaining > 0:
+            if not self.segments:
+                raise RuntimeError("RollState is out of segments unexpectedly.")
+
+            segment = self.segments[0]
+            start = self.offset
+            take = min(remaining, segment.length - start)
+
+            obs_parts.append(segment.observations[start:start + take])
+            act_parts.append(segment.actions[start:start + take])
+            rew_parts.append(segment.rewards[start:start + take])
+            cont_parts.append(segment.continues[start:start + take])
+            first_parts.append(segment.is_first[start:start + take])
+
+            remaining -= take
+
+            if start + take == segment.length:
+                # Current segment fully consumed; drop it and move to the next
+                self.segments.popleft()
+                self.offset = 0
+            else:
+                # Leave partially consumed segment at front with updated offset
+                self.offset = start + take
+
+        self.total_steps -= length
+
+        def _concat(parts: List[np.ndarray]) -> np.ndarray:
+            return np.concatenate(parts, axis=0) if len(parts) > 1 else parts[0]
+
+        return {
+            'observations': _concat(obs_parts),
+            'actions': _concat(act_parts),
+            'rewards': _concat(rew_parts),
+            'continues': _concat(cont_parts),
+            'is_first': _concat(first_parts)
+        }
 
 
 class ReplayBuffer:
@@ -27,6 +119,17 @@ class ReplayBuffer:
     Unlike standard RL replay buffers that sample individual transitions,
     this buffer samples sequences (chunks) of consecutive transitions.
     This is necessary for training the recurrent world model (RSSM).
+    
+    Major design ideas:
+      1. Environment interaction remains unchanged; we simply accumulate full episodes with distinct IDs and lengths.
+      2. When training needs B rollouts, we sample episodes with probability proportional to their length and concatenate them
+         (e.g., r_0 = ep_4 + ep_1 + ep_0). While building each rollout we mark the timestep where an episode starts via `is_first`.
+      3. Once rollouts exist, we slice them along time into aligned chunks of shape (B, T, C, H, W) plus rewards/continues/is_first
+         and feed those chunks to the GPU.
+      4. Rollouts only keep enough material to serve the next chunk; if a rollout still lacks T steps after slicing, we append
+         additional episodes on demand so that preparation can run alongside training.
+      5. During training the `is_first` mask tells the world model whenever h must reset, while other timesteps carry the state forward.
+      6. Because different batch elements hit `is_first` independently, downstream code maintains vectorized updates instead of loops.
     
     Storage format:
         - observations: (capacity, C, H, W)
@@ -66,10 +169,15 @@ class ReplayBuffer:
         self.idx = 0  # Current write position
         self.size = 0  # Current number of stored timesteps
         self.current_episode_id = 0
-        
-        # Episode tracking (for sequential sampling)
-        self.episode_lengths = []  # Length of each completed episode
-        self.episode_start_indices = []  # Start index of each episode in buffer
+        self.current_episode_length = 0
+        self.current_episode_start_idx = 0
+
+        # Completed episode metadata keyed by episode_id
+        self.episodes: Dict[int, EpisodeInfo] = {}
+
+        # Rolling batches cache for sequence sampling
+        self.roll_states: Optional[List[RollState]] = None
+        self.roll_batch_size: Optional[int] = None
     
     def add(
         self,
@@ -87,6 +195,14 @@ class ReplayBuffer:
             reward: Scalar reward
             done: Whether episode terminated
         """
+        if self.current_episode_length == 0:
+            self.current_episode_start_idx = self.idx
+
+        if self.size == self.capacity:
+            overwritten_episode_id = self.episode_ids[self.idx]
+            if overwritten_episode_id in self.episodes:
+                self.episodes.pop(overwritten_episode_id, None)
+
         # Convert action to one-hot
         action_onehot = np.zeros(self.action_size, dtype=np.float32)
         action_onehot[action] = 1.0
@@ -97,6 +213,7 @@ class ReplayBuffer:
         self.rewards[self.idx] = reward
         self.continues[self.idx] = 0.0 if done else 1.0
         self.episode_ids[self.idx] = self.current_episode_id
+        self.current_episode_length += 1
         
         # Update pointers
         self.idx = (self.idx + 1) % self.capacity
@@ -105,7 +222,14 @@ class ReplayBuffer:
         
         # If episode done, start new episode
         if done:
+            episode_info = EpisodeInfo(
+                episode_id=self.current_episode_id,
+                start_idx=self.current_episode_start_idx,
+                length=self.current_episode_length
+            )
+            self.episodes[self.current_episode_id] = episode_info
             self.current_episode_id += 1
+            self.current_episode_length = 0
     
     def add_batch(
         self,
@@ -132,85 +256,189 @@ class ReplayBuffer:
         seq_length: int
     ) -> Dict[str, torch.Tensor]:
         """
-        Sample random sequences from the buffer.
-        
-        Each sequence is a chunk of consecutive timesteps from a single episode.
-        
+        Sample sequences by concatenating full episodes into rolling buffers.
+
+        Design ideas:
+            1. Completed episodes are sampled with probability ∝ length, so longer episodes appear more often in the
+               concatenated rollouts.
+            2. Each rollout tracks `is_first` at the boundary where a new episode is appended.
+            3. Aligned slices of length T form the actual training chunk handed to the GPU.
+            4. After a chunk is emitted, rollouts top themselves up with additional episodes only if they fall short
+               of the next T steps.
+
         Args:
-            batch_size: Number of sequences to sample
-            seq_length: Length of each sequence (T)
-            
+            batch_size: Number of rollouts (B)
+            seq_length: Number of timesteps per chunk (T)
+
         Returns:
-            Dictionary containing:
+            Dictionary containing tensors:
                 - observations: (B, T, C, H, W)
                 - actions: (B, T, action_size)
                 - rewards: (B, T)
                 - continues: (B, T)
+                - dones: (B, T) -> bool tensor
+                - is_first: (B, T) -> bool tensor marking episode starts                
         """
-        # Find valid start indices
-        # A valid start index allows sampling seq_length consecutive steps
-        # from the same episode
-        valid_indices = []
-        
-        for i in range(self.size):
-            # Check if we can sample seq_length steps starting from i
-            end_idx = i + seq_length
-            
-            # Make sure we don't wrap around buffer
-            if end_idx > self.size:
-                continue
-            
-            # Make sure all steps are from same episode
-            episode_id = self.episode_ids[i]
-            same_episode = np.all(
-                self.episode_ids[i:end_idx] == episode_id
-            )
-            
-            if same_episode:
-                valid_indices.append(i)
-        
-        if len(valid_indices) < batch_size:
-            raise ValueError(
-                f"Not enough valid sequences. "
-                f"Need {batch_size}, but only {len(valid_indices)} available. "
-                f"Buffer size: {self.size}, Sequence length: {seq_length}"
-            )
-        
-        # Sample random start indices
-        start_indices = np.random.choice(valid_indices, size=batch_size, replace=True)
-        
-        # Collect sequences
+        if seq_length <= 0:
+            raise ValueError("seq_length must be positive.")
+
+        self._ensure_roll_states(batch_size)
+
+        # Grow each roll until it has enough steps to emit a chunk
+        for roll_state in self.roll_states:
+            while roll_state.available_steps() < seq_length:
+                if not self.episodes:
+                    raise ValueError("No completed episodes available to extend rollouts.")
+                # Length-weighted sampling so longer episodes contribute proportionally.
+                episode_info = self._sample_episode_info()
+                segment = self._episode_to_segment(episode_info)
+                roll_state.append_segment(segment)
+
         obs_batch = []
         act_batch = []
         rew_batch = []
         cont_batch = []
-        
-        for start_idx in start_indices:
-            end_idx = start_idx + seq_length
-            
-            obs_batch.append(self.observations[start_idx:end_idx])
-            act_batch.append(self.actions[start_idx:end_idx])
-            rew_batch.append(self.rewards[start_idx:end_idx])
-            cont_batch.append(self.continues[start_idx:end_idx])
-        
-        # Stack and convert to torch tensors
-        observations = torch.from_numpy(np.stack(obs_batch)).float() / 255.0  # Normalize to [0,1]
-        actions = torch.from_numpy(np.stack(act_batch))
-        rewards = torch.from_numpy(np.stack(rew_batch))
-        continues = torch.from_numpy(np.stack(cont_batch))
-        
-        # Move to device
+        done_batch = []
+        first_batch = []
+
+        # Extract aligned chunks (size seq_length) from each roll
+        for roll_state in self.roll_states:
+            chunk = roll_state.extract_chunk(seq_length)
+            obs_batch.append(chunk['observations'])
+            act_batch.append(chunk['actions'])
+            rew_batch.append(chunk['rewards'])
+            cont_batch.append(chunk['continues'])
+            # `continues` is 0.0 at terminal steps, so <= 0 flags done transitions.
+            done_batch.append(chunk['continues'] <= 0.0)
+            first_batch.append(chunk['is_first'])
+
+        # Stack and convert to tensors (normalize observations to [0,1])
+        observations = torch.from_numpy(np.stack(obs_batch)).float() / 255.0
+        actions = torch.from_numpy(np.stack(act_batch)).float()
+        rewards = torch.from_numpy(np.stack(rew_batch)).float()
+        continues = torch.from_numpy(np.stack(cont_batch)).float()
+        dones = torch.from_numpy(np.stack(done_batch)).bool()
+        is_first = torch.from_numpy(np.stack(first_batch)).bool()
+
+        # Move to target device
         observations = observations.to(self.device)
         actions = actions.to(self.device)
         rewards = rewards.to(self.device)
         continues = continues.to(self.device)
-        
+        dones = dones.to(self.device)
+        is_first = is_first.to(self.device)
+
         return {
             'observations': observations,
             'actions': actions,
             'rewards': rewards,
-            'continues': continues
+            'continues': continues,
+            'dones': dones,
+            'is_first': is_first
         }
+
+    def _ensure_roll_states(self, batch_size: int) -> None:
+        """
+        Ensure we have cached rollout state for the requested batch size.
+
+        Reinitializes the per-roll buffers if the batch size changes so that
+        each rollout can maintain its own queue of episode segments.
+
+        Args:
+            batch_size: Desired number of concurrent rollouts.
+        """
+        if self.roll_states is None or self.roll_batch_size != batch_size:
+            # Reset cached state whenever batch size changes (e.g., warmup vs. training).
+            self.roll_states = [RollState() for _ in range(batch_size)]
+            self.roll_batch_size = batch_size
+
+    def _sample_episode_info(self) -> EpisodeInfo:
+        """
+        Draw a completed episode according to length-proportional sampling.
+
+        Longer episodes receive higher probability so that each stored timestep
+        has equal chance of being used when we extend a rollout.
+
+        Returns:
+            EpisodeInfo describing the chosen episode.
+        """
+        if not self.episodes:
+            raise ValueError("No completed episodes to sample.")
+
+        episode_infos = list(self.episodes.values())
+        lengths = np.array([info.length for info in episode_infos], dtype=np.float64)
+
+        if lengths.sum() <= 0:
+            raise ValueError("Episode lengths must be positive for sampling.")
+
+        probabilities = lengths / lengths.sum()
+        index = np.random.choice(len(episode_infos), p=probabilities)
+        return episode_infos[index]
+
+    def _episode_to_segment(self, episode_info: EpisodeInfo) -> Segment:
+        """
+        Materialize a contiguous segment for the given episode.
+
+        Handles circular-buffer wraparound, converts all arrays into chronological
+        order, and marks the first timestep with `is_first=True`.
+
+        Args:
+            episode_info: Metadata describing the episode to extract.
+
+        Returns:
+            Segment object containing observations/actions/rewards/etc.
+        """
+        start = episode_info.start_idx
+        length = episode_info.length
+
+        observations = self._slice_circular(self.observations, start, length)
+        actions = self._slice_circular(self.actions, start, length)
+        rewards = self._slice_circular(self.rewards, start, length)
+        continues = self._slice_circular(self.continues, start, length)
+
+        is_first = np.zeros(length, dtype=bool)
+        if length > 0:
+            is_first[0] = True
+
+        return Segment(
+            observations=observations,
+            actions=actions,
+            rewards=rewards,
+            continues=continues,
+            is_first=is_first
+        )
+
+    def _slice_circular(self, array: np.ndarray, start: int, length: int) -> np.ndarray:
+        """
+        Slice `length` items from a circular buffer beginning at `start`.
+
+        If the range does not wrap, this is a straightforward slice; otherwise
+        the tail and head of the buffer are concatenated to restore temporal order.
+
+        Args:
+            array: Underlying circular storage array.
+            start: Starting index in the circular buffer.
+            length: Number of items to extract.
+
+        Returns:
+            Numpy array containing the extracted slice in chronological order.
+        """
+        if length <= 0:
+            return array[0:0].copy()
+
+        end = start + length
+
+        if end <= self.capacity:
+            return array[start:end].copy()
+
+        first_len = self.capacity - start
+        second_len = length - first_len
+
+        first_part = array[start:].copy()
+        second_part = array[:second_len].copy()
+
+        # Concatenate wrapped segments so callers always see chronological order.
+        return np.concatenate((first_part, second_part), axis=0)
     
     def sample_starts(self, batch_size: int) -> Dict[str, torch.Tensor]:
         """
@@ -278,25 +506,25 @@ class ReplayBuffer:
             save_dir: Base directory for saving episodes (default: logs/train_eps)
             fps: Frames per second for the video and GIF (default: 30)
         """
-        # Find all indices belonging to this episode
-        episode_mask = self.episode_ids[:self.size] == episode_id
-        episode_indices = np.where(episode_mask)[0]
+        episode_info = self.episodes.get(episode_id)
 
-        if len(episode_indices) == 0:
+        if episode_info is None:
             raise ValueError(
-                f"Episode ID {episode_id} not found in buffer. "
-                f"Available episode IDs: {np.unique(self.episode_ids[:self.size])}"
+                f"Episode ID {episode_id} not found in buffer metadata. "
+                f"Available episode IDs: {list(self.episodes.keys())}"
             )
 
         # Create output directory
         episode_dir = os.path.join(save_dir, f"episode_{episode_id}")
         os.makedirs(episode_dir, exist_ok=True)
 
-        # Extract episode data
-        episode_observations = self.observations[episode_indices]  # (T, C, H, W)
-        episode_actions = self.actions[episode_indices]  # (T, action_size) one-hot
-        episode_rewards = self.rewards[episode_indices]  # (T,)
-        episode_continues = self.continues[episode_indices]  # (T,)
+        # Extract episode data (contiguous ordering, handles circular buffer wrap)
+        segment = self._episode_to_segment(episode_info)
+        episode_observations = segment.observations  # (T, C, H, W)
+        episode_actions = segment.actions  # (T, action_size) one-hot
+        episode_rewards = segment.rewards  # (T,)
+        episode_continues = segment.continues  # (T,)
+        episode_length = episode_observations.shape[0]
 
         # Convert one-hot actions to action indices
         action_indices = np.argmax(episode_actions, axis=1).tolist()
@@ -386,8 +614,8 @@ class ReplayBuffer:
         with open(continues_path, 'w') as f:
             json.dump(episode_continues.tolist(), f, indent=2)
 
-        print(f"Saved episode {episode_id} ({len(episode_indices)} frames) to {episode_dir}")
-        print(f"  - {len(episode_indices)} observation images")
+        print(f"Saved episode {episode_id} ({episode_length} frames) to {episode_dir}")
+        print(f"  - {episode_length} observation images")
         print(f"  - Video: {video_path}")
         print(f"  - GIF: {gif_path}")
         print(f"  - Actions: {actions_path}")

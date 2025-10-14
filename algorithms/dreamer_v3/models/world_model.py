@@ -323,7 +323,8 @@ class RSSM(nn.Module):
         self,
         observations: torch.Tensor,
         actions: torch.Tensor,
-        h_0: Optional[torch.Tensor] = None
+        h_0: Optional[torch.Tensor] = None,
+        is_first: Optional[torch.Tensor] = None
     ) -> Dict[str, torch.Tensor]:
         """
         Closed-loop rollout: use encoder to get posterior z_t from observations.
@@ -335,6 +336,7 @@ class RSSM(nn.Module):
             observations: Image sequence, shape: (B, T, C, H, W)
             actions: Action sequence, shape: (B, T, action_size) - one-hot
             h_0: Initial hidden state, shape: (B, hidden_size) - if None, use zeros
+            is_first: Optional bool mask, shape: (B, T). True marks start of new episode.
             
         Returns:
             Dictionary containing:
@@ -352,6 +354,9 @@ class RSSM(nn.Module):
             h = torch.zeros(B, self.hidden_size, device=observations.device)
         else:
             h = h_0
+
+        if is_first is not None:
+            is_first = is_first.to(observations.device)
         
         # Storage for trajectory
         h_seq = []
@@ -362,6 +367,13 @@ class RSSM(nn.Module):
             # Get observation and action at time t
             x_t = observations[:, t]  # (B, C, H, W)
             a_t = actions[:, t]       # (B, action_size)
+
+            if is_first is not None:
+                reset_mask = is_first[:, t].unsqueeze(-1)
+                if reset_mask.any():
+                    # whenever a rollout chunk introduces a new episode,
+                    # reset the deterministic state for exactly those batch elements.
+                    h = torch.where(reset_mask, torch.zeros_like(h), h)
             
             # Prior: p_φ(z_t | h_t) - before seeing x_t
             z_prior_dist = self.prior(h)
@@ -499,7 +511,10 @@ class RSSM(nn.Module):
         observations: torch.Tensor,
         actions: torch.Tensor,
         rewards: torch.Tensor,
-        continues: torch.Tensor
+        continues: torch.Tensor,
+        *,
+        is_first: Optional[torch.Tensor] = None,
+        h_0: Optional[torch.Tensor] = None
     ) -> Dict[str, torch.Tensor]:
         """
         Compute world model loss (Equation 2 in DreamerV3 paper).
@@ -521,7 +536,7 @@ class RSSM(nn.Module):
             Dictionary with loss components
         """
         # Get posteriors and predictions via closed-loop rollout
-        outputs = self.observe(observations, actions)
+        outputs = self.observe(observations, actions, h_0=h_0, is_first=is_first)
         
         h = outputs['h']  # (B, T, hidden_size)
         z_post = outputs['z_post']  # (B, T, stoch_size, discrete_size)
@@ -618,6 +633,8 @@ class RSSM(nn.Module):
             'pred_loss': L_pred,
             'dyn_loss': L_dyn,
             'rep_loss': L_rep,
+            # Expose final deterministic state so the trainer can stitch chunks together.
+            'h_last': h[:, -1].detach(),
             'recon_loss': recon_loss.mean(),
             'reward_loss': reward_loss.mean(),
             'continue_loss': continue_loss.mean(),

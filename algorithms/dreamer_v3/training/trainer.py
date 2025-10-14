@@ -132,6 +132,8 @@ class DreamerV3Trainer:
         self.current_obs = None
         self.current_h = None
         self.current_z = None
+        # Keep the tail hidden state of each rollout across training chunks.
+        self.model_roll_hidden: Optional[torch.Tensor] = None
         
     def _set_seeds(self, seed: int):
         """Set random seeds for reproducibility."""
@@ -260,13 +262,29 @@ class DreamerV3Trainer:
             actions = batch['actions']  # (B, T, action_size)
             rewards = batch['rewards']  # (B, T)
             continues = batch['continues']  # (B, T)
+            is_first = batch['is_first']  # (B, T)
+            # the chunked rollouts arrive aligned in time with per-step episode boundaries.
+            
+            B = observations.shape[0]
+            if self.model_roll_hidden is None or self.model_roll_hidden.shape[0] != B:
+                # Allocate fresh state buffer if batch size changes (e.g., due to device count).
+                self.model_roll_hidden = torch.zeros(
+                    B, self.world_model.hidden_size, device=self.device
+                )
             
             # Compute world model loss
             with torch.autocast(device_type='cuda', enabled=self.use_amp):
                 losses = self.world_model.compute_loss(
-                    observations, actions, rewards, continues
+                    observations,
+                    actions,
+                    rewards,
+                    continues,
+                    is_first=is_first,
+                    h_0=self.model_roll_hidden
                 )
                 loss = losses['total_loss']
+                # Prompt step 5: carry the hidden state forward between chunks, detaching to avoid cross-chunk gradients.
+                self.model_roll_hidden = losses.pop('h_last').detach()
             
             # Backward pass
             self.optimizer_model.zero_grad()
