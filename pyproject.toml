@@ -1,0 +1,18 @@
+[project]
+name = "learn-rl-with-mario"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "gym==0.25.1",
+    "gym-super-mario-bros==7.4.0",
+    "moviepy==1.0.3",
+    "nes-py==8.2.1",
+    "numpy==1.26.4",
+    "opencv-python>=4.11.0.86",
+    "pyyaml==6.0.2",
+    "tensorboard==2.20.0",
+    "torch==2.8.0",
+    "torchvision==0.23.0",
+]
