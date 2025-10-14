@@ -283,7 +283,7 @@ class DreamerV3Trainer:
                     h_0=self.model_roll_hidden
                 )
                 loss = losses['total_loss']
-                # Prompt step 5: carry the hidden state forward between chunks, detaching to avoid cross-chunk gradients.
+                # carry the hidden state forward between chunks, detaching to avoid cross-chunk gradients.
                 self.model_roll_hidden = losses.pop('h_last').detach()
             
             # Backward pass
