@@ -30,7 +30,7 @@ class EpisodeCollector:
         self.episodes_per_batch = episodes_per_batch
 
         # Track collection state
-        # episode_buffers[b] = list of frames for current episode at batch index b
+        # episode_buffers[b] = list of (frame, action) tuples for current episode at batch index b
         self.episode_buffers = {}
         # episode_counts[b] = number of complete episodes collected at batch index b
         self.episode_counts = {}
@@ -46,6 +46,7 @@ class EpisodeCollector:
                 - observations: (B, T, C, H, W) tensor
                 - is_first: (B, T) tensor indicating episode starts
                 - continues: (B, T) tensor (0.0 = done, 1.0 = continue)
+                - actions: (B, T, A) tensor with action one-hot or probabilities
 
         Returns:
             True if collection is complete (3 episodes per batch index), False otherwise
@@ -53,6 +54,10 @@ class EpisodeCollector:
         observations = batch['observations']  # (B, T, C, H, W)
         is_first = batch['is_first']  # (B, T)
         continues = batch['continues']  # (B, T)
+        actions = batch['actions']  # (B, T, A)
+
+        # Convert actions to indices (argmax over action dimension)
+        action_indices = actions.argmax(dim=-1)  # (B, T)
 
         B, T = observations.shape[0], observations.shape[1]
 
@@ -98,7 +103,10 @@ class EpisodeCollector:
                     if frame.shape[-1] == 1:
                         frame = np.repeat(frame, 3, axis=-1)
 
-                    self.episode_buffers[b].append(frame)
+                    # Get action for this frame
+                    action = int(action_indices[b, t].item())
+
+                    self.episode_buffers[b].append((frame, action))
 
                 # End episode if done
                 if is_done and self.in_episode[b]:
@@ -115,34 +123,46 @@ class EpisodeCollector:
         # Check if collection is complete for all batch indices
         return self._is_collection_complete(B)
 
-    def _save_episode(self, batch_idx: int, frames: list):
+    def _save_episode(self, batch_idx: int, episode_data: list):
         """
-        Save episode as GIF file.
+        Save episode as GIF file and individual JPG frames.
 
         Args:
             batch_idx: Batch index (b)
-            frames: List of numpy arrays (H, W, C) in uint8 format
+            episode_data: List of (frame, action) tuples where frame is numpy array (H, W, C) in uint8 format
         """
-        if len(frames) == 0:
+        if len(episode_data) == 0:
             return
 
         episode_idx = self.episode_counts[batch_idx]
-        num_steps = len(frames)
-        output_path = self.output_dir / f"b_{batch_idx}_episode_{episode_idx}_steps_{num_steps}.gif"
+        num_steps = len(episode_data)
 
-        # Convert frames to PIL Images
+        # Extract frames for GIF
+        frames = [frame for frame, _ in episode_data]
+
+        # Save as GIF
+        gif_path = self.output_dir / f"b_{batch_idx}_episode_{episode_idx}_steps_{num_steps}.gif"
         pil_frames = [Image.fromarray(frame) for frame in frames]
-
-        # Save as GIF (duration in milliseconds per frame, ~15 FPS)
         pil_frames[0].save(
-            output_path,
+            gif_path,
             save_all=True,
             append_images=pil_frames[1:],
             duration=67,  # ~15 FPS
             loop=0
         )
 
-        print(f"[DataPipelineTest] Saved episode: {output_path} ({num_steps} frames)")
+        # Create subfolder for individual frames
+        episode_folder = self.output_dir / f"b_{batch_idx}_episode_{episode_idx}"
+        episode_folder.mkdir(parents=True, exist_ok=True)
+
+        # Save each frame as JPG with action info in filename
+        for i, (frame, action) in enumerate(episode_data):
+            frame_filename = f"obs_{i+1:03d}_act_{action:02d}.jpg"
+            frame_path = episode_folder / frame_filename
+            Image.fromarray(frame).save(frame_path, 'JPEG', quality=95)
+
+        print(f"[DataPipelineTest] Saved episode: {gif_path} ({num_steps} frames)")
+        print(f"[DataPipelineTest] Saved frames to: {episode_folder}")
 
     def _is_collection_complete(self, batch_size: int) -> bool:
         """
