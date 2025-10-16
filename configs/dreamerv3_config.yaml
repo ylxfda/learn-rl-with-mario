@@ -86,7 +86,7 @@ training:
   kl_balancing: "both"            # "both" for bidirectional KL (Eq 2)
   
   # Actor regularization (Section 3.3)
-  entropy_scale: 1.0e-3             # Entropy bonus for exploration
+  entropy_scale: 3.0e-3             # Entropy bonus for exploration (increased to prevent collapse)
   unimix_ratio: 0.01              # Unimix exploration (1% uniform actions)
   
   # Critic (distributional value learning, Section B.3)

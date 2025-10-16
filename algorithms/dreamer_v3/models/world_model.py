@@ -635,6 +635,9 @@ class RSSM(nn.Module):
             'rep_loss': L_rep,
             # Expose final deterministic state so the trainer can stitch chunks together.
             'h_last': h[:, -1].detach(),
+            # Return full sequences for coupled training with actor-critic
+            'h_seq': h.detach(),  # (B, T, hidden_size)
+            'z_seq': z_post.detach(),  # (B, T, stoch_size, discrete_size)
             'recon_loss': recon_loss.mean(),
             'reward_loss': reward_loss.mean(),
             'continue_loss': continue_loss.mean(),

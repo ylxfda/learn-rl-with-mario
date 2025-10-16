@@ -239,39 +239,48 @@ class DreamerV3Trainer:
     def train_world_model(self, num_updates: int = 1):
         """
         Train world model on replay buffer sequences.
-        
+
         UPDATE[φ]: Update world model parameters.
         FROZEN[θ, ψ]: Actor-critic parameters frozen.
-        
+
         Args:
             num_updates: Number of gradient updates to perform
+
+        Returns:
+            Dictionary containing posterior states from the last update:
+                - 'h': (B, T, hidden_size) - deterministic states
+                - 'z': (B, T, stoch_size, discrete_size) - stochastic states
+            Returns None if not enough data yet.
         """
         if not self.replay_buffer.is_ready(self.config['training']['replay_min_size']):
-            return  # Not enough data yet
+            return None  # Not enough data yet
         
         self.world_model.train()
-        
+
+        # Store posterior states from the last update
+        posterior_states = None
+
         for _ in range(num_updates):
             # Sample batch of sequences
             batch = self.replay_buffer.sample_sequences(
                 batch_size=self.config['training']['batch_size_model'],
                 seq_length=self.config['training']['batch_length']
             )
-            
+
             observations = batch['observations']  # (B, T, C, H, W)
             actions = batch['actions']  # (B, T, action_size)
             rewards = batch['rewards']  # (B, T)
             continues = batch['continues']  # (B, T)
             is_first = batch['is_first']  # (B, T)
             # the chunked rollouts arrive aligned in time with per-step episode boundaries.
-            
+
             B = observations.shape[0]
             if self.model_roll_hidden is None or self.model_roll_hidden.shape[0] != B:
                 # Allocate fresh state buffer if batch size changes (e.g., due to device count).
                 self.model_roll_hidden = torch.zeros(
                     B, self.world_model.hidden_size, device=self.device
                 )
-            
+
             # Compute world model loss
             with torch.autocast(device_type='cuda', enabled=self.use_amp):
                 losses = self.world_model.compute_loss(
@@ -285,7 +294,11 @@ class DreamerV3Trainer:
                 loss = losses['total_loss']
                 # carry the hidden state forward between chunks, detaching to avoid cross-chunk gradients.
                 self.model_roll_hidden = losses.pop('h_last').detach()
-            
+
+                # Extract posterior states for coupled training (already detached in compute_loss)
+                h_seq = losses.pop('h_seq')  # (B, T, hidden_size)
+                z_seq = losses.pop('z_seq')  # (B, T, stoch_size, discrete_size)
+
             # Backward pass
             self.optimizer_model.zero_grad()
             if self.use_amp:
@@ -304,48 +317,71 @@ class DreamerV3Trainer:
                     self.config['optimization']['grad_clip']
                 )
                 self.optimizer_model.step()
-            
+
             # Log losses
             self.logger.log_world_model(losses, self.global_step)
+
+            # Store posterior states from this update (will keep only the last one)
+            posterior_states = {
+                'h': h_seq,  # (B, T, hidden_size)
+                'z': z_seq   # (B, T, stoch_size, discrete_size)
+            }
+
+        # Return posterior states from the last update for coupled actor-critic training
+        return posterior_states
     
     # ========================================================================
     # Phase 3: Behavior Learning (Actor-Critic)
     # ========================================================================
     
-    def train_actor_critic(self, num_updates: int = 1):
+    def train_actor_critic(self, num_updates: int = 1, posterior_states: Optional[Dict] = None):
         """
         Train actor and critic on imagined trajectories.
-        
+
         UPDATE[θ, ψ]: Update actor and critic.
         FROZEN[φ]: World model frozen (used for imagination).
-        
+
         Args:
             num_updates: Number of gradient updates
+            posterior_states: Optional dict containing posterior states from world model training:
+                - 'h': (B, T, hidden_size) - deterministic states
+                - 'z': (B, T, stoch_size, discrete_size) - stochastic states
+                If provided, uses the last state of the sequence as starting point.
+                If None, falls back to sampling starts from replay buffer.
         """
         if not self.replay_buffer.is_ready(self.config['training']['replay_min_size']):
             return
-        
+
         self.world_model.eval()  # Freeze world model
         self.actor.train()
         self.critic.train()
-        
+
         for _ in range(num_updates):
-            # Sample starting states for imagination
-            starts = self.replay_buffer.sample_starts(
-                batch_size=self.config['training']['batch_size_actor']
-            )
-            
-            # Initialize states from starts (using world model encoder)
-            with torch.no_grad():
-                obs_start = starts['observations']  # (B, C, H, W)
-                B = obs_start.shape[0]
-                
-                # Initialize h_0
-                h_0 = torch.zeros(B, self.world_model.hidden_size, device=self.device)
-                
-                # Get z_0 from encoder
-                z_dist_0 = self.world_model.encode(h_0, obs_start)
-                z_0 = z_dist_0.sample()
+            # Initialize starting states for imagination
+            if posterior_states is not None:
+                # Use posterior states from world model training (coupled mode)
+                # Take the last timestep from the sequence as starting point
+                with torch.no_grad():
+                    h_0 = posterior_states['h'][:, -1]  # (B, hidden_size)
+                    z_0 = posterior_states['z'][:, -1]  # (B, stoch_size, discrete_size)
+                    B = h_0.shape[0]
+            else:
+                # Original mode: Sample starting states from replay buffer
+                starts = self.replay_buffer.sample_starts(
+                    batch_size=self.config['training']['batch_size_actor']
+                )
+
+                # Initialize states from starts (using world model encoder)
+                with torch.no_grad():
+                    obs_start = starts['observations']  # (B, C, H, W)
+                    B = obs_start.shape[0]
+
+                    # Initialize h_0
+                    h_0 = torch.zeros(B, self.world_model.hidden_size, device=self.device)
+
+                    # Get z_0 from encoder
+                    z_dist_0 = self.world_model.encode(h_0, obs_start)
+                    z_0 = z_dist_0.sample()
             
             # Imagine trajectories (open-loop with prior)
             with torch.no_grad():
@@ -508,13 +544,15 @@ class DreamerV3Trainer:
             # Phase 1: Collect experience
             self.collect_experience(num_steps=h_collect)
             pbar.update(h_collect)
-            
-            # Phase 2: Train world model
-            self.train_world_model(num_updates=train_ratio)
-            
-            # Phase 3: Train actor-critic
-            self.train_actor_critic(num_updates=train_ratio)
-            
+
+            # Phase 2 & 3: Coupled training of world model and actor-critic
+            # For each world model update, immediately train actor-critic on the posterior states
+            for _ in range(train_ratio):
+                posterior_states = self.train_world_model(num_updates=1)
+                # Only train actor-critic if we got valid posterior states
+                if posterior_states is not None:
+                    self.train_actor_critic(num_updates=1, posterior_states=posterior_states)
+
             # Logging
             if self.global_step % self.config['logging']['log_every'] == 0:
                 self.logger.flush(self.global_step)
