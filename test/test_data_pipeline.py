@@ -184,6 +184,5 @@ def test_data_pipeline(batch: Dict[str, torch.Tensor]) -> bool:
 
     if is_complete:
         print("[DataPipelineTest] Collection complete! Check ./test_output/ for GIF files.")
-        print("[DataPipelineTest] Stopping training for test...")
 
     return is_complete

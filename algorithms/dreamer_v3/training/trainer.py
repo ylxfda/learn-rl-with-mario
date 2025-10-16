@@ -141,6 +141,9 @@ class DreamerV3Trainer:
         self.current_z = None
         # Keep the tail hidden state of each rollout across training chunks.
         self.model_roll_hidden: Optional[torch.Tensor] = None
+
+        # Debug state: track if data pipeline test is complete
+        self.debug_test_complete = False
         
     def _set_seeds(self, seed: int):
         """Set random seeds for reproducibility."""
@@ -153,18 +156,23 @@ class DreamerV3Trainer:
     # Phase 1: Environment Collection
     # ========================================================================
     
-    def collect_experience(self, num_steps: int):
+    def collect_experience(self, num_steps: int, mode: str = 'policy'):
         """
-        Collect experience from environment using current policy.
-        
+        Collect experience from environment using current policy or random actions.
+
         FROZEN[φ, θ, ψ]: Models are in eval mode, no gradient updates.
-        
+
         Args:
             num_steps: Number of environment steps to collect (H_collect)
+            mode: Action selection mode
+                - 'policy': Use current policy (default)
+                - 'random': Uniform random sampling from action space
         """
+        assert mode in ['policy', 'random'], f"Invalid mode: {mode}. Must be 'policy' or 'random'"
+
         self.world_model.eval()
         self.actor.eval()
-        
+
         # Initialize episode if needed
         if self.current_obs is None:
             self.current_obs = self.env.reset()
@@ -177,16 +185,21 @@ class DreamerV3Trainer:
                 obs_tensor = torch.from_numpy(self.current_obs).float().unsqueeze(0).to(self.device) / 255.0
                 z_dist = self.world_model.encode(self.current_h, obs_tensor)
                 self.current_z = z_dist.sample()
-        
+
         for _ in range(num_steps):
-            # Select action using current policy
-            with torch.no_grad():
-                action_idx, log_prob = self.actor.get_action(
-                    self.current_h,
-                    self.current_z,
-                    deterministic=False  # Use stochastic policy for exploration
-                )
-                action_idx = action_idx.item()
+            # Select action based on mode
+            if mode == 'random':
+                # Uniform random action selection
+                action_idx = np.random.randint(0, self.env.action_size)
+            else:  # mode == 'policy'
+                # Select action using current policy
+                with torch.no_grad():
+                    action_idx, _ = self.actor.get_action(
+                        self.current_h,
+                        self.current_z,
+                        deterministic=False  # Use stochastic policy for exploration
+                    )
+                    action_idx = action_idx.item()
             
             # Step environment
             next_obs, reward, done, info = self.env.step(action_idx)
@@ -282,8 +295,10 @@ class DreamerV3Trainer:
             # the chunked rollouts arrive aligned in time with per-step episode boundaries.
 
             # DEBUG: Test data pipeline by collecting episodes and saving as GIFs
-            if self.debug:
-                test_data_pipeline(batch)
+            if self.debug and not self.debug_test_complete:
+                if test_data_pipeline(batch):
+                    self.debug_test_complete = True
+                    print("[DataPipelineTest] Test complete. Resuming normal training...")
 
             B = observations.shape[0]
             if self.model_roll_hidden is None or self.model_roll_hidden.shape[0] != B:
