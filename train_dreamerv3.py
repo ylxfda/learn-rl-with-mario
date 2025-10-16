@@ -50,6 +50,12 @@ def main():
         help='Number of evaluation episodes (overrides config)'
     )
 
+    parser.add_argument(
+        '--debug',
+        action='store_true',
+        help='Enable debug mode (runs test code like data pipeline tests)'
+    )
+
     args = parser.parse_args()
 
     # Validate arguments
@@ -66,7 +72,7 @@ def main():
 
     # Create trainer
     try:
-        trainer = DreamerV3Trainer(args.config)
+        trainer = DreamerV3Trainer(args.config, debug=args.debug)
     except Exception as e:
         print(f"Error creating trainer: {e}")
         sys.exit(1)

@@ -29,6 +29,7 @@ from algorithms.dreamer_v3.agent.actor_critic import (
 from algorithms.dreamer_v3.training.replay_buffer import ReplayBuffer
 from algorithms.dreamer_v3.envs.mario_env import make_mario_env
 from algorithms.dreamer_v3.utils.logger import Logger
+from test.test_data_pipeline import test_data_pipeline
 
 
 class DreamerV3Trainer:
@@ -45,14 +46,20 @@ class DreamerV3Trainer:
     └─────────────────────────────────────────────────────┘
     """
     
-    def __init__(self, config_path: str):
+    def __init__(self, config_path: str, debug: bool = False):
         """
         Args:
             config_path: Path to YAML configuration file
+            debug: Enable debug mode (runs test code like data pipeline tests)
         """
         # Load config
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)
+
+        # Debug mode
+        self.debug = debug
+        if self.debug:
+            print("[DEBUG MODE ENABLED] Test code will be executed")
         
         # Set device
         self.device = torch.device(
@@ -273,6 +280,10 @@ class DreamerV3Trainer:
             continues = batch['continues']  # (B, T)
             is_first = batch['is_first']  # (B, T)
             # the chunked rollouts arrive aligned in time with per-step episode boundaries.
+
+            # DEBUG: Test data pipeline by collecting episodes and saving as GIFs
+            if self.debug:
+                test_data_pipeline(batch)
 
             B = observations.shape[0]
             if self.model_roll_hidden is None or self.model_roll_hidden.shape[0] != B:
