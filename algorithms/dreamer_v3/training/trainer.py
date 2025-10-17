@@ -220,12 +220,7 @@ class DreamerV3Trainer:
             # Update state for next step (using world model)
             if not done:
                 with torch.no_grad():
-                    # Encode next observation
-                    next_obs_tensor = torch.from_numpy(next_obs).float().unsqueeze(0).to(self.device) / 255.0
-                    z_post_dist = self.world_model.encode(self.current_h, next_obs_tensor)
-                    next_z = z_post_dist.sample()
-                    
-                    # Update deterministic state
+                    # Update deterministic state first so encoder sees h_{t+1}
                     action_onehot = F.one_hot(
                         torch.tensor([action_idx], device=self.device),
                         num_classes=self.env.action_size
@@ -235,6 +230,11 @@ class DreamerV3Trainer:
                         self.current_z,
                         action_onehot
                     )
+
+                    # Encode next observation with updated hidden state
+                    next_obs_tensor = torch.from_numpy(next_obs).float().unsqueeze(0).to(self.device) / 255.0
+                    z_post_dist = self.world_model.encode(next_h, next_obs_tensor)
+                    next_z = z_post_dist.sample()
                     
                     self.current_h = next_h
                     self.current_z = next_z
