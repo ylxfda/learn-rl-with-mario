@@ -2,12 +2,16 @@
 """
 Simplified DreamerV3 reconstruction training.
 
-This script collects a scripted dataset of Mario frames/actions,
-trains the full RSSM on a pure pixel-reconstruction objective,
-and then evaluates reconstructions along a fixed action rollout.
+Goal:
+    Validate whether the RSSM encoder/decoder and deterministic state h
+    can accurately reconstruct observations without involving reward,
+    KL, or other auxiliary losses.
 
-It is meant to isolate encoder/decoder + recurrent state behaviour
-without the extra losses used in the full Dreamer training loop.
+Workflow:
+    1. Collect sequences with a scripted policy (move right first).
+    2. Train the full RSSM (h, z, dynamics) using only pixel MSE loss.
+    3. After training, generate reconstruction GIFs in both teacher-forced
+       (training data) and open-loop settings to diagnose issues.
 """
 
 from __future__ import annotations
@@ -29,17 +33,26 @@ from algorithms.dreamer_v3.models.world_model import RSSM
 
 
 class SequenceDataset(Dataset):
-    """Sliding-window dataset of observation/action sequences."""
+    """
+    Sliding-window dataset over stored trajectories.
+    - Input is the entire trajectory (observations/actions/rewards/continues/is_first).
+    - Each __getitem__ returns a chunk of length seq_len for truncated
+      BPTT, matching the tensor shapes used in the main Dreamer trainer.
+    """
 
     def __init__(
         self,
         observations: torch.Tensor,  # (N, C, H, W)
         actions: torch.Tensor,       # (N, action_size)
+        rewards: torch.Tensor,       # (N,)
+        continues: torch.Tensor,     # (N,)
         is_first: torch.Tensor,      # (N,)
         seq_len: int
     ):
         self.observations = observations
         self.actions = actions
+        self.rewards = rewards
+        self.continues = continues
         self.is_first = is_first
         self.seq_len = seq_len
 
@@ -49,16 +62,36 @@ class SequenceDataset(Dataset):
     def __getitem__(self, idx: int):
         obs = self.observations[idx:idx + self.seq_len]
         act = self.actions[idx:idx + self.seq_len]
+        rew = self.rewards[idx:idx + self.seq_len]
+        cont = self.continues[idx:idx + self.seq_len]
         first = self.is_first[idx:idx + self.seq_len]
-        return obs, act, first
+        return obs, act, rew, cont, first
 
 
-def collect_sequences(env, num_frames: int, warmup_right: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+def collect_sequences(
+    env,
+    num_frames: int,
+    warmup_right: int
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """
-    Roll out scripted policy to gather observation/action sequences.
+    Collect (obs, action, is_first) sequences using a scripted policy.
+
+    Args:
+        env: Mario environment wrapper.
+        num_frames: Total number of frames to gather.
+        warmup_right: Steps to force the "move right" action so Mario reaches key areas.
+
+    Returns:
+        observations: (N, C, H, W) tensor normalized to [0, 1].
+        actions: (N, action_size) one-hot actions.
+        rewards: (N,) float tensor of environment rewards.
+        continues: (N,) float tensor where 1.0 means the episode continues.
+        first_flags: (N,) bool tensor marking the start of each episode.
     """
     observations = []
     actions = []
+    rewards = []
+    continues = []
     first_flags = []
 
     obs = env.reset()
@@ -78,8 +111,10 @@ def collect_sequences(env, num_frames: int, warmup_right: int) -> Tuple[torch.Te
         onehot[action_idx] = 1.0
         actions.append(onehot)
 
-        next_obs, _, done, _ = env.step(action_idx)
+        next_obs, reward, done, _ = env.step(action_idx)
         obs = next_obs
+        rewards.append(torch.tensor(reward, dtype=torch.float32))
+        continues.append(torch.tensor(0.0 if done else 1.0, dtype=torch.float32))
         first = done
         step += 1
 
@@ -90,8 +125,10 @@ def collect_sequences(env, num_frames: int, warmup_right: int) -> Tuple[torch.Te
 
     observations = torch.stack(observations)  # (N, C, H, W)
     actions = torch.stack(actions)            # (N, action_size)
+    rewards = torch.stack(rewards)            # (N,)
+    continues = torch.stack(continues)        # (N,)
     first_flags = torch.tensor(first_flags, dtype=torch.bool)  # (N,)
-    return observations, actions, first_flags
+    return observations, actions, rewards, continues, first_flags
 
 
 def evaluate_model(
@@ -103,7 +140,13 @@ def evaluate_model(
     frames: int,
     warmup_right: int
 ) -> None:
-    """Generate reconstruction grid and GIF for qualitative inspection."""
+    """
+    Perform an open-loop rollout in the environment to log reconstructions.
+
+    - Each step uses encoder(h_t, obs_t) to obtain the posterior, then decode(h_t, z_t).
+    - h_{t+1} is updated via dynamics(h_t, z_t, action) to mimic online operation.
+    - Additionally track posterior vs prior KL and posterior entropy to monitor collapse.
+    """
     env = make_mario_env(config)
     obs = env.reset()
     h = torch.zeros(1, model.hidden_size, device=device)
@@ -137,7 +180,7 @@ def evaluate_model(
         if step < warmup_right:
             action_idx = 1
         else:
-            action_idx = 1  # keep holding right to avoid oscillations
+            action_idx = np.random.randint(0, env.action_size)  # take random action
 
         next_obs, _, done, _ = env.step(action_idx)
 
@@ -198,7 +241,12 @@ def evaluate_training_recon(
     output_gif: Path,
     max_frames: int
 ) -> None:
-    """Evaluate reconstructions on training sequences using observe()."""
+    """
+    Evaluate reconstructions on the training data (teacher-forced).
+
+    - Directly call observe(), identical to training, so the encoder sees real observations.
+    - Verifies that the model behaves correctly under teacher forcing.
+    """
     model.eval()
     length = min(max_frames, observations.shape[0])
     obs = observations[:length].unsqueeze(0).to(device)
@@ -242,23 +290,34 @@ def evaluate_training_recon(
 
 
 def parse_args() -> argparse.Namespace:
+    """
+    Command-line arguments:
+        --frames            Number of frames to collect for the dataset.
+        --epochs            Training epochs (pure MSE; increase if needed).
+        --seq-len           BPTT sequence length; longer sequences stress h more.
+        --warmup-right      Steps with forced "move right" action during collection.
+        --output / --gif-output
+                            Outputs for open-loop evaluation.
+        --train-output / --train-gif-output
+                            Outputs for closed-loop (training data) evaluation.
+    """
     parser = argparse.ArgumentParser(description="Simplified Dreamer reconstruction training.")
     parser.add_argument("--config", type=str, default="configs/dreamerv3_config.yaml", help="Config file.")
-    parser.add_argument("--frames", type=int, default=20000, help="Number of frames to collect for training.")
+    parser.add_argument("--frames", type=int, default=20000, help="Total frames to collect for training.")
     parser.add_argument("--epochs", type=int, default=20, help="Training epochs.")
     parser.add_argument("--batch-size", type=int, default=32, help="Mini-batch size.")
     parser.add_argument("--seq-len", type=int, default=64, help="Sequence length for BPTT.")
     parser.add_argument("--warmup-right", type=int, default=400, help="Steps forcing Mario to move right.")
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate.")
-    parser.add_argument("--output", type=str, default="logs/discrete_autoencoder_recon.png", help="Preview image path.")
+    parser.add_argument("--output", type=str, default="logs/discrete_autoencoder_recon.png", help="Open-loop preview image.")
     parser.add_argument("--train-output", type=str, default="logs/discrete_autoencoder_train_recon.png",
-                        help="Preview image (training data) path.")
-    parser.add_argument("--gif-output", type=str, default="logs/discrete_autoencoder_recon.gif", help="GIF output path.")
+                        help="Closed-loop (training data) preview image.")
+    parser.add_argument("--gif-output", type=str, default="logs/discrete_autoencoder_recon.gif", help="Open-loop GIF path.")
     parser.add_argument("--train-gif-output", type=str, default="logs/discrete_autoencoder_train_recon.gif",
-                        help="GIF for training data reconstruction.")
-    parser.add_argument("--gif-frames", type=int, default=400, help="Frames for evaluation GIF.")
+                        help="Closed-loop GIF path.")
+    parser.add_argument("--gif-frames", type=int, default=400, help="Frames for open-loop GIF.")
     parser.add_argument("--train-eval-frames", type=int, default=400,
-                        help="Number of frames from training data for evaluation.")
+                        help="Frames used in closed-loop evaluation.")
     return parser.parse_args()
 
 
@@ -269,40 +328,52 @@ def main():
     with open(args.config, "r") as f:
         config = yaml.safe_load(f)
 
-    env = make_mario_env(config)
+    env = make_mario_env(config)  # reuse Dreamer main program Mario warpper
     print(f"Collecting {args.frames} frames...")
-    observations, actions, is_first = collect_sequences(env, args.frames, args.warmup_right)
+    observations, actions, rewards, continues, is_first = collect_sequences(
+        env, args.frames, args.warmup_right
+    )
     env.close()
 
     dataset = SequenceDataset(
         observations=observations,
         actions=actions,
+        rewards=rewards,
+        continues=continues,
         is_first=is_first,
         seq_len=args.seq_len
     )
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, drop_last=True)
 
     model = RSSM(config).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)  # only world model being updated
 
     print("Starting training...")
     for epoch in range(1, args.epochs + 1):
         model.train()
         epoch_loss = 0.0
-        for obs_seq, act_seq, first_seq in loader:
+        epoch_pred = 0.0
+        epoch_dyn = 0.0
+        epoch_rep = 0.0
+        epoch_recon = 0.0
+        epoch_reward = 0.0
+        epoch_continue = 0.0
+        for obs_seq, act_seq, rew_seq, cont_seq, first_seq in loader:
             obs_seq = obs_seq.to(device)  # (B, T, C, H, W)
             act_seq = act_seq.to(device)  # (B, T, action_size)
+            rew_seq = rew_seq.to(device)  # (B, T)
+            cont_seq = cont_seq.to(device)  # (B, T)
             first_seq = first_seq.to(device)  # (B, T)
 
-            outputs = model.observe(
+            losses = model.compute_loss(
                 observations=obs_seq,
                 actions=act_seq,
-                h_0=None,
-                is_first=first_seq
+                rewards=rew_seq,
+                continues=cont_seq,
+                is_first=first_seq,
+                h_0=None
             )
-
-            recon = outputs["x_recon"]
-            loss = F.mse_loss(recon, obs_seq)
+            loss = losses["total_loss"]
 
             optimizer.zero_grad()
             loss.backward()
@@ -310,9 +381,25 @@ def main():
             optimizer.step()
 
             epoch_loss += loss.item()
+            epoch_pred += losses["pred_loss"].detach().item()
+            epoch_dyn += losses["dyn_loss"].detach().item()
+            epoch_rep += losses["rep_loss"].detach().item()
+            epoch_recon += losses["recon_loss"].detach().item()
+            epoch_reward += losses["reward_loss"].detach().item()
+            epoch_continue += losses["continue_loss"].detach().item()
 
         epoch_loss /= len(loader)
-        print(f"Epoch {epoch:02d}: loss={epoch_loss:.6f}")
+        epoch_pred /= len(loader)
+        epoch_dyn /= len(loader)
+        epoch_rep /= len(loader)
+        epoch_recon /= len(loader)
+        epoch_reward /= len(loader)
+        epoch_continue /= len(loader)
+        print(
+            f"Epoch {epoch:02d}: total={epoch_loss:.6f}, "
+            f"pred={epoch_pred:.6f}, dyn={epoch_dyn:.6f}, rep={epoch_rep:.6f}, "
+            f"recon={epoch_recon:.6f}, reward={epoch_reward:.6f}, cont={epoch_continue:.6f}"
+        )
 
     model.eval()
     evaluate_training_recon(
