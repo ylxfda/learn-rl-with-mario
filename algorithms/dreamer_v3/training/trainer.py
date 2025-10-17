@@ -30,6 +30,7 @@ from algorithms.dreamer_v3.training.replay_buffer import ReplayBuffer
 from algorithms.dreamer_v3.envs.mario_env import make_mario_env
 from algorithms.dreamer_v3.utils.logger import Logger
 from test.test_data_pipeline import test_data_pipeline
+from test.test_env import test_env_step
 
 
 class DreamerV3Trainer:
@@ -203,7 +204,11 @@ class DreamerV3Trainer:
             
             # Step environment
             next_obs, reward, done, info = self.env.step(action_idx)
-            
+
+            # DEBUG: Save environment frames
+            if self.debug:
+                test_env_step(self.current_obs, self.global_step, reward, action_idx)
+
             # Add to replay buffer
             self.replay_buffer.add(
                 observation=self.current_obs,
