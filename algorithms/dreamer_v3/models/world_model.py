@@ -180,9 +180,9 @@ class RSSM(nn.Module):
         # Extract image features
         img_features = self.image_encoder(x)  # (B, img_feat_dim) or (B, T, img_feat_dim)
         
-        # Concatenate with h_t
+        # Concatenate with current deterministic state h_t
         encoder_input = torch.cat([img_features, h], dim=-1)
-        
+
         # Get logits for categorical distribution
         logits = self.encoder_mlp(encoder_input)  # (B, stoch_size * discrete_size)
         
@@ -258,9 +258,9 @@ class RSSM(nn.Module):
         # Flatten z
         z_flat = z.reshape(*z.shape[:-2], -1)  # (B, stoch_dim) or (B, T, stoch_dim)
         
-        # Concatenate state
+        # Concatenate deterministic and stochastic parts
         state = torch.cat([h, z_flat], dim=-1)
-        
+
         # Decode to image
         x_recon = self.image_decoder(state)
         
@@ -375,11 +375,14 @@ class RSSM(nn.Module):
                     # reset the deterministic state for exactly those batch elements.
                     h = torch.where(reset_mask, torch.zeros_like(h), h)
             
+            # Snapshot current deterministic state so recon uses matching h_t
+            h_current = h
+            
             # Prior: p_φ(z_t | h_t) - before seeing x_t
-            z_prior_dist = self.prior(h)
+            z_prior_dist = self.prior(h_current)
             
             # Posterior: q_φ(z_t | h_t, x_t) - after seeing x_t
-            z_post_dist = self.encode(h, x_t)
+            z_post_dist = self.encode(h_current, x_t)
             
             # Sample from posterior (with straight-through gradients)
             z_post = z_post_dist.sample()  # (B, stoch_size, discrete_size)
@@ -387,10 +390,10 @@ class RSSM(nn.Module):
             
             # Update deterministic state for current timestep so reconstruction uses freshest features
             # h_{t+1} = f_φ(h_t, z_t, a_t)
-            h = self.dynamics(h, z_post, a_t)
+            h = self.dynamics(h_current, z_post, a_t)
             
             # Store updated states
-            h_seq.append(h)
+            h_seq.append(h_current)
             z_post_seq.append(z_post)
             z_prior_seq.append(z_prior)
         
@@ -412,7 +415,8 @@ class RSSM(nn.Module):
             'z_prior': z_prior_seq,
             'x_recon': x_recon,
             'reward': reward_pred,
-            'continue': continue_pred
+            'continue': continue_pred,
+            'h_last': h  # deterministic state after processing entire sequence
         }
     
     def imagine(
@@ -544,6 +548,7 @@ class RSSM(nn.Module):
         x_recon = outputs['x_recon']  # (B, T, C, H, W)
         reward_pred = outputs['reward']  # (B, T) symlog space
         continue_pred = outputs['continue']  # (B, T)
+        h_last = outputs['h_last']  # (B, hidden_size)
         
         # ====================================================================
         # L_pred: Prediction Loss
@@ -634,7 +639,7 @@ class RSSM(nn.Module):
             'dyn_loss': L_dyn,
             'rep_loss': L_rep,
             # Expose final deterministic state so the trainer can stitch chunks together.
-            'h_last': h[:, -1].detach(),
+            'h_last': h_last.detach(),
             # Return full sequences for coupled training with actor-critic
             'h_seq': h.detach(),  # (B, T, hidden_size)
             'z_seq': z_post.detach(),  # (B, T, stoch_size, discrete_size)
