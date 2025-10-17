@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Tuple
+from typing import Tuple, Deque
+
+from collections import deque
 
 import imageio.v2 as imageio
 import numpy as np
@@ -79,7 +81,9 @@ class SequenceDataset(Dataset):
 def collect_sequences(
     env,
     num_frames: int,
-    warmup_right: int
+    warmup_right: int,
+    stall_window: int = 12,
+    stall_threshold: float = 1.0
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Collect (obs, action, is_first) sequences using a scripted policy.
@@ -101,10 +105,13 @@ def collect_sequences(
     rewards = []
     continues = []
     first_flags = []
+    delta_buffer: Deque[float] = deque(maxlen=stall_window)
 
     obs = env.reset()
     first = True
     step = 0
+    prev_x = 0.0
+    delta_buffer.clear()
 
     while len(observations) < num_frames:
         observations.append(torch.from_numpy(obs).float() / 255.0)
@@ -119,17 +126,33 @@ def collect_sequences(
         onehot[action_idx] = 1.0
         actions.append(onehot)
 
-        next_obs, reward, done, _ = env.step(action_idx)
+        next_obs, reward, done, info = env.step(action_idx)
         obs = next_obs
         rewards.append(torch.tensor(reward, dtype=torch.float32))
         continues.append(torch.tensor(0.0 if done else 1.0, dtype=torch.float32))
         first = done
         step += 1
+        current_x = float(info.get("x_pos", 0))
+        delta_x = current_x - prev_x
+        prev_x = current_x
+        delta_buffer.append(delta_x)
 
         if done:
             obs = env.reset()
             first = True
             step = 0
+            prev_x = 0.0
+            delta_buffer.clear()
+            continue
+
+        if len(delta_buffer) == stall_window and all(
+            abs(dx) < stall_threshold for dx in delta_buffer
+        ):
+            obs = env.reset()
+            first = True
+            step = 0
+            prev_x = 0.0
+            delta_buffer.clear()
 
     observations = torch.stack(observations)  # (N, C, H, W)
     actions = torch.stack(actions)            # (N, action_size)
