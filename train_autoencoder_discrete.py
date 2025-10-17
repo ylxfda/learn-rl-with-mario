@@ -30,6 +30,14 @@ import yaml
 
 from algorithms.dreamer_v3.envs.mario_env import make_mario_env
 from algorithms.dreamer_v3.models.world_model import RSSM
+from algorithms.dreamer_v3.models.distributions import symexp
+from algorithms.dreamer_v3.agent.actor_critic import (
+    Actor,
+    Critic,
+    EMATargetCritic,
+    compute_lambda_returns,
+    compute_actor_loss,
+)
 
 
 class SequenceDataset(Dataset):
@@ -133,6 +141,7 @@ def collect_sequences(
 
 def evaluate_model(
     model: RSSM,
+    actor: Actor,
     config: dict,
     device: torch.device,
     output_image: Path,
@@ -150,6 +159,7 @@ def evaluate_model(
     env = make_mario_env(config)
     obs = env.reset()
     h = torch.zeros(1, model.hidden_size, device=device)
+    actor.eval()
 
     truth_frames = []
     recon_frames = []
@@ -180,7 +190,9 @@ def evaluate_model(
         if step < warmup_right:
             action_idx = 1
         else:
-            action_idx = np.random.randint(0, env.action_size)  # take random action
+            with torch.no_grad():
+                action_dist = actor(h, z, deterministic=True)
+                action_idx = action_dist.mode().item()
 
         next_obs, _, done, _ = env.step(action_idx)
 
@@ -221,7 +233,13 @@ def evaluate_model(
         stacked = torch.cat([truth, recon, diff], dim=1)
         gif_frames.append((stacked.permute(1, 2, 0).numpy() * 255).astype(np.uint8))
 
-    imageio.mimsave(output_gif, gif_frames, fps=12)
+    imageio.mimsave(
+        output_gif,
+        gif_frames,
+        format="GIF",
+        loop=0,
+        duration=1 / 12
+    )
 
     mse = np.mean([(t.numpy() - r.numpy()) ** 2 for t, r in zip(truth_frames, recon_frames)])
     print(f"Saved reconstruction preview to {output_image}")
@@ -282,7 +300,13 @@ def evaluate_training_recon(
             diff = diff.repeat(3, 1, 1)
         stacked = torch.cat([t, r, diff], dim=1)
         frames.append((stacked.permute(1, 2, 0).numpy() * 255).astype(np.uint8))
-    imageio.mimsave(output_gif, frames, fps=12)
+    imageio.mimsave(
+        output_gif,
+        frames,
+        format="GIF",
+        loop=0,
+        duration=1 / 12
+    )
 
     print(f"[TrainRecon] Saved grid to {output_image}")
     print(f"[TrainRecon] Saved GIF to {output_gif}")
@@ -318,6 +342,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gif-frames", type=int, default=400, help="Frames for open-loop GIF.")
     parser.add_argument("--train-eval-frames", type=int, default=400,
                         help="Frames used in closed-loop evaluation.")
+    parser.add_argument("--checkpoint-dir", type=str, default="logs/autoencoder_ckpts",
+                        help="Directory to save checkpoints.")
     return parser.parse_args()
 
 
@@ -344,13 +370,30 @@ def main():
         seq_len=args.seq_len
     )
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, drop_last=True)
+    checkpoint_dir = Path(args.checkpoint_dir)
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     model = RSSM(config).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)  # only world model being updated
+    actor = Actor(config).to(device)
+    critic = Critic(config).to(device)
+    target_critic = EMATargetCritic(critic, tau=config['training']['tau'])
+    optimizer_actor = torch.optim.Adam(
+        actor.parameters(),
+        lr=config['training']['lr_actor'],
+        eps=config['optimization']['eps']
+    )
+    optimizer_critic = torch.optim.Adam(
+        critic.parameters(),
+        lr=config['training']['lr_critic'],
+        eps=config['optimization']['eps']
+    )
 
     print("Starting training...")
     for epoch in range(1, args.epochs + 1):
         model.train()
+        actor.train()
+        critic.train()
         epoch_loss = 0.0
         epoch_pred = 0.0
         epoch_dyn = 0.0
@@ -358,6 +401,8 @@ def main():
         epoch_recon = 0.0
         epoch_reward = 0.0
         epoch_continue = 0.0
+        epoch_actor_loss = 0.0
+        epoch_critic_loss = 0.0
         for obs_seq, act_seq, rew_seq, cont_seq, first_seq in loader:
             obs_seq = obs_seq.to(device)  # (B, T, C, H, W)
             act_seq = act_seq.to(device)  # (B, T, action_size)
@@ -388,6 +433,75 @@ def main():
             epoch_reward += losses["reward_loss"].detach().item()
             epoch_continue += losses["continue_loss"].detach().item()
 
+            # Actor-Critic update (single step per batch, mirroring main flow)
+            with torch.no_grad():
+                h_seq = losses["h_seq"]
+                z_seq = losses["z_seq"]
+                h_start = h_seq[:, -1]
+                z_start = z_seq[:, -1]
+                imagined = model.imagine(
+                    h_0=h_start,
+                    z_0=z_start,
+                    actor=actor,
+                    horizon=config['training']['h_imagine']
+                )
+                h_imag = imagined['h']
+                z_imag = imagined['z']
+                rewards_imag = imagined['reward']  # symlog space
+                continues_imag = imagined['continue']
+
+            values = critic.get_value(h_imag, z_imag)
+            with torch.no_grad():
+                bootstrap = target_critic.get_value(h_imag[:, -1], z_imag[:, -1])
+                lambda_returns = compute_lambda_returns(
+                    rewards=rewards_imag,
+                    continues=continues_imag,
+                    values=values.detach(),
+                    bootstrap=bootstrap,
+                    gamma=config['training']['gamma'],
+                    lambda_=config['training']['lambda_']
+                )
+
+            critic_loss = critic.compute_loss(
+                h_imag.detach(),
+                z_imag.detach(),
+                lambda_returns
+            )
+            optimizer_critic.zero_grad()
+            critic_loss.backward()
+            torch.nn.utils.clip_grad_norm_(critic.parameters(), config['optimization']['grad_clip'])
+            optimizer_critic.step()
+
+            h_flat = h_imag.reshape(-1, h_imag.shape[-1])
+            z_flat = z_imag.reshape(-1, *z_imag.shape[2:])
+            action_dist = actor(h_flat, z_flat)
+            actions_flat = imagined['actions'].reshape(-1, model.action_size)
+            action_indices = torch.argmax(actions_flat, dim=-1)
+            log_probs = action_dist.log_prob(action_indices).reshape(h_imag.shape[0], -1)
+            entropy = action_dist.entropy().reshape(h_imag.shape[0], -1)
+
+            advantages = lambda_returns - values.detach()
+            flat_returns = lambda_returns.reshape(-1)
+            p95 = torch.quantile(flat_returns, 0.95)
+            p5 = torch.quantile(flat_returns, 0.05)
+            denom = (p95 - p5).clamp_min(1e-6)
+            advantages = (advantages - advantages.mean()) / denom
+
+            actor_loss = compute_actor_loss(
+                log_probs=log_probs,
+                advantages=advantages,
+                entropy=entropy,
+                entropy_scale=config['training']['entropy_scale']
+            )
+            optimizer_actor.zero_grad()
+            actor_loss.backward()
+            torch.nn.utils.clip_grad_norm_(actor.parameters(), config['optimization']['grad_clip'])
+            optimizer_actor.step()
+            target_critic.update(critic)
+
+            epoch_actor_loss += actor_loss.detach().item()
+            epoch_critic_loss += critic_loss.detach().item()
+
         epoch_loss /= len(loader)
         epoch_pred /= len(loader)
         epoch_dyn /= len(loader)
@@ -395,10 +509,47 @@ def main():
         epoch_recon /= len(loader)
         epoch_reward /= len(loader)
         epoch_continue /= len(loader)
+        epoch_actor_loss /= len(loader)
+        epoch_critic_loss /= len(loader)
         print(
             f"Epoch {epoch:02d}: total={epoch_loss:.6f}, "
             f"pred={epoch_pred:.6f}, dyn={epoch_dyn:.6f}, rep={epoch_rep:.6f}, "
-            f"recon={epoch_recon:.6f}, reward={epoch_reward:.6f}, cont={epoch_continue:.6f}"
+            f"recon={epoch_recon:.6f}, reward={epoch_reward:.6f}, cont={epoch_continue:.6f}, "
+            f"actor={epoch_actor_loss:.6f}, critic={epoch_critic_loss:.6f}"
+        )
+        if epoch % 2 == 0:
+            ckpt_suffix = f"epoch_{epoch:02d}"
+            evaluate_training_recon(
+                model=model,
+                observations=observations,
+                actions=actions,
+                is_first=is_first,
+                device=device,
+                output_image=Path(args.train_output).with_name(f"{Path(args.train_output).stem}_{ckpt_suffix}.png"),
+                output_gif=Path(args.train_gif_output).with_name(f"{Path(args.train_gif_output).stem}_{ckpt_suffix}.gif"),
+                max_frames=args.train_eval_frames
+            )
+            evaluate_model(
+                model=model,
+                actor=actor,
+                config=config,
+                device=device,
+                output_image=Path(args.output).with_name(f"{Path(args.output).stem}_{ckpt_suffix}.png"),
+                output_gif=Path(args.gif_output).with_name(f"{Path(args.gif_output).stem}_{ckpt_suffix}.gif"),
+                frames=args.gif_frames,
+                warmup_right=args.warmup_right
+            )
+        torch.save(
+            {
+                "epoch": epoch,
+                "world_model": model.state_dict(),
+                "actor": actor.state_dict(),
+                "critic": critic.state_dict(),
+                "optimizer_model": optimizer.state_dict(),
+                "optimizer_actor": optimizer_actor.state_dict(),
+                "optimizer_critic": optimizer_critic.state_dict(),
+            },
+            checkpoint_dir / f"checkpoint_epoch_{epoch:02d}.pt"
         )
 
     model.eval()
@@ -414,6 +565,7 @@ def main():
     )
     evaluate_model(
         model=model,
+        actor=actor,
         config=config,
         device=device,
         output_image=Path(args.output),

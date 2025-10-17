@@ -618,10 +618,12 @@ class RSSM(nn.Module):
         # L_rep: Representation Loss (stop gradient on prior so only posterior is updated)
         # L_rep = KL[sg(q) || p]
         # ====================================================================
-        L_rep = torch.sum(
+        kl_rep = torch.sum(
             post_probs * (torch.log(post_probs + 1e-8) - torch.log(sg(prior_probs) + 1e-8)),
             dim=-1
-        ).mean()
+        )
+        kl_rep = free_bits_kl(kl_rep, free_nats=self.config['training']['free_nats'])
+        L_rep = kl_rep.mean()
         
         # ====================================================================
         # Total Loss
