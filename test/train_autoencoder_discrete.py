@@ -31,7 +31,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 from torchvision.utils import save_image
-import imageio.v2 as imageio
+from PIL import Image
 import yaml
 
 # Make sure project root is on PYTHONPATH so `algorithms.*` imports work when executed from `test/`.
@@ -252,6 +252,38 @@ def collect_episodes(
 # --------------------------------------------------------------------------- #
 
 
+def _convert_frames_to_shared_palette(frames: List[np.ndarray]) -> List[Image.Image]:
+    """Convert RGB frames to paletted images sharing the first frame's palette."""
+    if not frames:
+        return []
+
+    base_img = Image.fromarray(frames[0])
+    base_paletted = base_img.convert("P", palette=Image.ADAPTIVE, colors=256, dither=Image.NONE)
+    paletted_frames = [base_paletted]
+
+    for arr in frames[1:]:
+        img = Image.fromarray(arr)
+        pal = img.quantize(palette=base_paletted, dither=Image.NONE)
+        paletted_frames.append(pal)
+
+    return paletted_frames
+
+
+def _save_gif(frames: List[Image.Image], path: Path, fps: int = 12) -> None:
+    """Persist paletted frames as a looping GIF without triggering palette flicker."""
+    if not frames:
+        return
+    duration_ms = int(1000 / max(1, fps))
+    frames[0].save(
+        path,
+        save_all=True,
+        append_images=frames[1:],
+        loop=0,
+        duration=duration_ms,
+        optimize=False,
+    )
+
+
 def evaluate_model(
     model: RSSM,
     actor: Actor,
@@ -342,13 +374,8 @@ def evaluate_model(
         stacked = torch.cat([truth, recon, diff], dim=1)
         gif_frames.append((stacked.permute(1, 2, 0).numpy() * 255).astype(np.uint8))
 
-    imageio.mimsave(
-        output_gif,
-        gif_frames,
-        format="GIF",
-        loop=0,
-        duration=1 / 12,
-    )
+    paletted_frames = _convert_frames_to_shared_palette(gif_frames)
+    _save_gif(paletted_frames, output_gif)
 
     mse = np.mean([(t.numpy() - r.numpy()) ** 2 for t, r in zip(truth_frames, recon_frames)])
     print(f"Saved reconstruction preview to {output_image}")
@@ -404,13 +431,9 @@ def evaluate_training_recon(
             diff = diff.repeat(3, 1, 1)
         stacked = torch.cat([t, r, diff], dim=1)
         frames.append((stacked.permute(1, 2, 0).numpy() * 255).astype(np.uint8))
-    imageio.mimsave(
-        output_gif,
-        frames,
-        format="GIF",
-        loop=0,
-        duration=1 / 12,
-    )
+
+    paletted_frames = _convert_frames_to_shared_palette(frames)
+    _save_gif(paletted_frames, output_gif)
 
     print(f"[TrainRecon] Saved grid to {output_image}")
     print(f"[TrainRecon] Saved GIF to {output_gif}")
@@ -426,11 +449,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Iterative Dreamer autoencoder experiment.")
     parser.add_argument("--config", type=str, default="configs/dreamerv3_config.yaml", help="Config file.")
     parser.add_argument("--frames", type=int, default=20000, help="Target frames to collect per iteration.")
-    parser.add_argument("--epochs", type=int, default=20, help="Training epochs per iteration.")
+    parser.add_argument("--epochs", type=int, default=10, help="Training epochs per iteration.")
     parser.add_argument("--iterations", type=int, default=5, help="Number of collection/training iterations.")
     parser.add_argument("--batch-size", type=int, default=32, help="Mini-batch size.")
     parser.add_argument("--seq-len", type=int, default=64, help="Sequence length for truncated BPTT.")
-    parser.add_argument("--warmup-right", type=int, default=400, help="Forced move-right steps for scripted rollout.")
+    parser.add_argument("--warmup-right", type=int, default=0, help="Forced move-right steps for scripted rollout.")
     parser.add_argument("--lr", type=float, default=1e-3, help="World model learning rate.")
     parser.add_argument("--output", type=str, default="logs/discrete_autoencoder_recon.png", help="Open-loop preview image.")
     parser.add_argument("--train-output", type=str, default="logs/discrete_autoencoder_train_recon.png",
@@ -443,7 +466,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint-dir", type=str, default="logs/autoencoder_ckpts", help="Checkpoint directory.")
     parser.add_argument("--explore-prob", type=float, default=0.1,
                         help="Policy exploration probability during data collection.")
-    parser.add_argument("--stall-window", type=int, default=12,
+    parser.add_argument("--stall-window", type=int, default=15,
                         help="Steps sampled for stall detection based on x-position deltas.")
     parser.add_argument("--stall-threshold", type=float, default=1.0,
                         help="Minimum |Δx| considered as progress (in pixels).")
