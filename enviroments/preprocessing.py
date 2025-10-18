@@ -335,7 +335,7 @@ def preprocess_frame_dreamerv3(frame, size=64, grayscale=True):
         np.array: (C, H, W) uint8 in [0, 255], where C=1 for grayscale, C=3 for RGB
     """
     # Crop HUD
-    frame = frame[30:210, :]
+    # frame = frame[30:210, :]
 
     # Convert to grayscale if requested
     if grayscale:
@@ -352,7 +352,35 @@ def preprocess_frame_dreamerv3(frame, size=64, grayscale=True):
         # RGB: (H, W, C) -> (C, H, W)
         frame = np.transpose(frame, (2, 0, 1))
 
-    return frame.astype(np.uint8)
+    processed = frame.astype(np.uint8)
+
+    # ------------------------------------------------------------------
+    # Temporary debug: save processed frame to ./test_output/
+    # ------------------------------------------------------------------
+    # try:
+    #     from pathlib import Path
+    #     from datetime import datetime
+    #     output_dir = Path("test_output")
+    #     output_dir.mkdir(parents=True, exist_ok=True)
+
+    #     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    #     filename = output_dir / f"debug_frame_{timestamp}.jpg"
+
+    #     if grayscale:
+    #         # processed shape: (1, H, W) -> convert back to (H, W)
+    #         img = processed[0]
+    #     else:
+    #         # processed shape: (C, H, W) -> (H, W, C)
+    #         img = np.transpose(processed, (1, 2, 0))
+
+    #     if grayscale:
+    #         cv2.imwrite(str(filename), img)
+    #     else:
+    #         cv2.imwrite(str(filename), cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+    # except Exception as exc:  # noqa: F841 - debug helper
+    #     pass
+
+    return processed
 
 
 class MarioDreamerV3Wrapper(gym.Wrapper):
