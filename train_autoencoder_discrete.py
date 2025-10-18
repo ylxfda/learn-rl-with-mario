@@ -303,6 +303,8 @@ def evaluate_training_recon(
         )
     recon = outputs["x_recon"].squeeze(0).cpu()
     truth = obs.squeeze(0).cpu()
+    truth = torch.clamp(truth, 0.0, 1.0)
+    recon = torch.clamp(recon, 0.0, 1.0)
 
     mse = torch.mean((recon - truth) ** 2).item()
 
@@ -562,41 +564,18 @@ def main():
                 frames=args.gif_frames,
                 warmup_right=args.warmup_right
             )
-        torch.save(
-            {
-                "epoch": epoch,
-                "world_model": model.state_dict(),
-                "actor": actor.state_dict(),
-                "critic": critic.state_dict(),
-                "optimizer_model": optimizer.state_dict(),
-                "optimizer_actor": optimizer_actor.state_dict(),
-                "optimizer_critic": optimizer_critic.state_dict(),
-            },
-            checkpoint_dir / f"checkpoint_epoch_{epoch:02d}.pt"
-        )
-
-    model.eval()
-    evaluate_training_recon(
-        model=model,
-        observations=observations,
-        actions=actions,
-        is_first=is_first,
-        device=device,
-        output_image=Path(args.train_output),
-        output_gif=Path(args.train_gif_output),
-        max_frames=args.train_eval_frames
-    )
-    evaluate_model(
-        model=model,
-        actor=actor,
-        config=config,
-        device=device,
-        output_image=Path(args.output),
-        output_gif=Path(args.gif_output),
-        frames=args.gif_frames,
-        warmup_right=args.warmup_right
-    )
-
+            torch.save(
+                {
+                    "epoch": epoch,
+                    "world_model": model.state_dict(),
+                    "actor": actor.state_dict(),
+                    "critic": critic.state_dict(),
+                    "optimizer_model": optimizer.state_dict(),
+                    "optimizer_actor": optimizer_actor.state_dict(),
+                    "optimizer_critic": optimizer_critic.state_dict(),
+                },
+                checkpoint_dir / f"checkpoint_epoch_{epoch:02d}.pt"
+            )
 
 if __name__ == "__main__":
     main()
