@@ -90,9 +90,29 @@ class RSSM(nn.Module):
         # Sequence Model: h_t = f_φ(h_{t-1}, z_{t-1}, a_{t-1})
         # ====================================================================
         # GRU that updates deterministic state h_t given previous z and action
-        
+
+        # Input preprocessing layer: [z_{t-1}, a_{t-1}] -> hidden representation
+        inp_layers = []
+        inp_dim = self.stoch_dim + self.action_size
+        inp_layers.append(nn.Linear(inp_dim, self.hidden_size, bias=False))
+        if config['model']['layer_norm']:
+            inp_layers.append(nn.LayerNorm(self.hidden_size, eps=1e-03))
+
+        # Activation function
+        if config['model']['activation'] == "SiLU":
+            inp_layers.append(nn.SiLU())
+        elif config['model']['activation'] == "ReLU":
+            inp_layers.append(nn.ReLU())
+        elif config['model']['activation'] == "ELU":
+            inp_layers.append(nn.ELU())
+        else:
+            raise ValueError(f"Unknown activation: {config['model']['activation']}")
+
+        self.img_in_layers = nn.Sequential(*inp_layers)
+
+        # GRU cell processes the preprocessed input
         self.sequence_model = GRUCell(
-            input_dim=self.stoch_dim + self.action_size,  # z_{t-1} (one-hot) + a_{t-1} (one-hot)
+            input_dim=self.hidden_size,  # Now takes preprocessed hidden representation
             hidden_dim=self.hidden_size,
             layer_norm=config['model']['layer_norm']
         )
@@ -199,26 +219,30 @@ class RSSM(nn.Module):
     ) -> torch.Tensor:
         """
         Sequence model: h_t = f_φ(h_{t-1}, z_{t-1}, a_{t-1})
-        
-        Updates deterministic state h using GRU.
-        
+
+        Updates deterministic state h using GRU with preprocessing layer.
+
         Args:
             h_prev: Previous deterministic state, shape: (B, hidden_size)
             z_prev: Previous stochastic state (one-hot), shape: (B, stoch_size, discrete_size)
             action: Action (one-hot), shape: (B, action_size)
-            
+
         Returns:
             New deterministic state h_t, shape: (B, hidden_size)
         """
         # Flatten z_prev to (B, stoch_dim)
         z_flat = z_prev.reshape(z_prev.shape[0], -1)
-        
+
         # Concatenate [z_{t-1}, a_{t-1}]
-        gru_input = torch.cat([z_flat, action], dim=-1)
-        
-        # Update h_t using GRU
-        h_next = self.sequence_model(gru_input, h_prev)
-        
+        input_features = torch.cat([z_flat, action], dim=-1)
+
+        # Preprocess input through linear layer 
+        # This transforms [z, a] into a richer representation before GRU
+        preprocessed = self.img_in_layers(input_features)
+
+        # Update h_t using GRU with preprocessed input
+        h_next = self.sequence_model(preprocessed, h_prev)
+
         return h_next
     
     def prior(self, h: torch.Tensor) -> CategoricalDist:
