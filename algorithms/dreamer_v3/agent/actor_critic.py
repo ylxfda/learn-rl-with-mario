@@ -231,32 +231,60 @@ class Critic(nn.Module):
         self,
         h: torch.Tensor,
         z: torch.Tensor,
-        target_values: torch.Tensor
+        target_values: torch.Tensor,
+        slow_target_dist: torch.Tensor = None
     ) -> torch.Tensor:
         """
-        Compute distributional value loss using two-hot targets.
-        
-        Loss: cross-entropy between predicted distribution and two-hot target.
-        
+        Compute distributional value loss using two-hot targets with slow target regularization.
+
+        Loss has two components:
+            1. Main loss: fit λ-returns
+            2. Regularization loss: stay close to slow target critic's predictions
+
+        The regularization stabilizes learning by preventing the critic from changing too quickly.
+
         Args:
             h: Deterministic state, shape: (B, hidden_size) or (B, T, hidden_size)
             z: Stochastic state, shape: (B, stoch_size, discrete_size)
             target_values: Target values (λ-returns), shape: (B,) or (B, T)
-            
+            slow_target_dist: Optional slow target distribution, shape: (B, num_bins) or (B, T, num_bins)
+                             If provided, adds regularization term to keep predictions close to slow target
+
         Returns:
             Scalar loss
         """
         # Get predicted distribution
         pred_dist = self.forward(h, z)  # (B, num_bins) or (B, T, num_bins)
-        
+
+        # ====================================================================
+        # Main Loss: Fit λ-returns
+        # ====================================================================
         # Encode target values to two-hot
         target_dist = self.twohot.encode(target_values)  # (B, num_bins) or (B, T, num_bins)
-        
-        # Cross-entropy loss (treat as classification)
-        # Note: target_dist is already a soft distribution (two-hot), not one-hot
-        loss = -torch.sum(target_dist * torch.log(pred_dist + 1e-8), dim=-1)
-        
-        return loss.mean()
+
+        # Cross-entropy loss between prediction and two-hot target (treat as classification)
+        # L_main = -∑ target_dist * log(pred_dist)
+        loss_main = -torch.sum(target_dist * torch.log(pred_dist + 1e-8), dim=-1)
+
+        # ====================================================================
+        # Regularization Loss: Stay close to slow target (if provided)
+        # ====================================================================
+        # This implements the key idea from DreamerV3 paper:
+        # "we stabilize learning by regularizing the critic towards predicting
+        #  the outputs of an exponentially moving average of its own parameters"
+        if slow_target_dist is not None:
+            # L_reg = -∑ slow_target_dist * log(pred_dist)
+            # This encourages pred_dist to be close to slow_target_dist
+            loss_reg = -torch.sum(slow_target_dist * torch.log(pred_dist + 1e-8), dim=-1)
+
+            # Total loss: main loss + regularization loss
+            # Note: In the reference implementation, this is done by subtracting log_prob,
+            # which is equivalent to adding cross-entropy
+            total_loss = loss_main + loss_reg
+        else:
+            total_loss = loss_main
+
+        return total_loss.mean()
 
 
 class EMATargetCritic:

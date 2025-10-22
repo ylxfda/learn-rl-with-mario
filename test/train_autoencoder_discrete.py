@@ -623,10 +623,19 @@ def main() -> None:
                         lambda_=config['training']['lambda_'],
                     )
 
+                # Get slow target distribution for regularization
+                with torch.no_grad():
+                    slow_target_dist = target_critic.target_critic.forward(
+                        h_imag.detach(),
+                        z_imag.detach()
+                    )
+
+                # Compute critic loss with slow target regularization
                 critic_loss = critic.compute_loss(
                     h_imag.detach(),
                     z_imag.detach(),
                     lambda_returns,
+                    slow_target_dist=slow_target_dist  # Add slow target regularization
                 )
                 optimizer_critic.zero_grad()
                 critic_loss.backward()

@@ -455,12 +455,21 @@ class DreamerV3Trainer:
                     lambda_=self.config['training']['lambda_']
                 )  # (B, H)
             
-            # Critic loss
+            # Critic loss with slow target regularization
             with torch.autocast(device_type='cuda', enabled=self.use_amp):
+                # Get slow target distribution for regularization
+                with torch.no_grad():
+                    slow_target_dist = self.target_critic.target_critic.forward(
+                        h_seq.detach(),
+                        z_seq.detach()
+                    )  # (B, H, num_bins)
+
+                # Compute critic loss with both main loss and regularization
                 critic_loss = self.critic.compute_loss(
                     h_seq.detach(),  # Stop gradient to world model
                     z_seq.detach(),
-                    lambda_returns
+                    lambda_returns,
+                    slow_target_dist=slow_target_dist  # Add slow target regularization
                 )
             
             # Update critic
