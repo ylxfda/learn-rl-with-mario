@@ -51,6 +51,91 @@ from algorithms.dreamer_v3.agent.actor_critic import (
 
 
 # --------------------------------------------------------------------------- #
+# Percentile-based return normalization with EMA
+# --------------------------------------------------------------------------- #
+
+
+class PercentileReturnNormalizer:
+    """
+    Percentile-based return normalization with exponential moving average.
+
+    From DreamerV3 paper (Appendix B):
+    "To be robust to these outliers, we compute the range from the 5th to the 95th
+    return percentile over the return batch and smooth out the estimate using an
+    exponential moving average."
+
+    This prevents outliers from over-compressing the return range, which would
+    cause suboptimal convergence.
+    """
+
+    def __init__(
+        self,
+        percentile_low: float = 0.05,
+        percentile_high: float = 0.95,
+        ema_decay: float = 0.99,
+        epsilon: float = 1.0,
+    ):
+        """
+        Args:
+            percentile_low: Lower percentile for range calculation (default: 5%)
+            percentile_high: Upper percentile for range calculation (default: 95%)
+            ema_decay: Decay rate for exponential moving average (default: 0.99)
+            epsilon: Small value to prevent division by zero
+        """
+        self.percentile_low = percentile_low
+        self.percentile_high = percentile_high
+        self.ema_decay = ema_decay
+        self.epsilon = epsilon
+
+        # EMA of the percentile range (initialized on first call)
+        self.ema_scale: Optional[float] = None
+
+    def __call__(self, returns: torch.Tensor) -> torch.Tensor:
+        """
+        Normalize returns using percentile-based scaling with EMA.
+
+        Args:
+            returns: Return values, shape: (B, T) or any shape
+
+        Returns:
+            Normalized returns with same shape as input
+        """
+        # Flatten for percentile computation
+        flat_returns = returns.reshape(-1)
+
+        # Compute percentiles for current batch
+        p_low = torch.quantile(flat_returns, self.percentile_low)
+        p_high = torch.quantile(flat_returns, self.percentile_high)
+
+        # Compute current batch scale (p95 - p5)
+        batch_scale = (p_high - p_low).item()
+
+        # Initialize or update EMA of the scale
+        if self.ema_scale is None:
+            # First batch: initialize EMA
+            self.ema_scale = batch_scale
+        else:
+            # Update EMA: scale_new = decay * scale_old + (1 - decay) * scale_batch
+            self.ema_scale = self.ema_decay * self.ema_scale + (1 - self.ema_decay) * batch_scale
+
+        # Use EMA scale for normalization (with minimum threshold)
+        scale = max(self.ema_scale, self.epsilon)
+
+        # Normalize by the smoothed scale
+        # Note: We don't subtract offset (p_low) because we want to preserve
+        # the sign and relative magnitude of returns
+        normalized = returns / scale
+
+        return normalized
+
+    def get_stats(self) -> dict:
+        """Get current EMA statistics for logging."""
+        return {
+            "ema_scale": self.ema_scale if self.ema_scale is not None else 0.0,
+        }
+
+
+# --------------------------------------------------------------------------- #
 # Dataset helpers
 # --------------------------------------------------------------------------- #
 
@@ -500,6 +585,14 @@ def main() -> None:
     optimizer_critic = torch.optim.Adam(critic.parameters(), lr=config['training']['lr_critic'],
                                         eps=config['optimization']['eps'])
 
+    # Initialize percentile-based return normalizer with EMA
+    return_normalizer = PercentileReturnNormalizer(
+        percentile_low=0.05,
+        percentile_high=0.95,
+        ema_decay=0.99,
+        epsilon=1.0,
+    )
+
     episodes: List[Episode] = []
 
     for collect_iter in range(args.iterations):
@@ -650,12 +743,9 @@ def main() -> None:
                 log_probs = action_dist.log_prob(action_indices).reshape(h_imag.shape[0], -1)
                 entropy = action_dist.entropy().reshape(h_imag.shape[0], -1)
 
-                advantages = lambda_returns - values.detach()
-                flat_returns = lambda_returns.reshape(-1)
-                p95 = torch.quantile(flat_returns, 0.95)
-                p5 = torch.quantile(flat_returns, 0.05)
-                denom = (p95 - p5).clamp_min(1e-6)
-                advantages = (advantages - advantages.mean()) / denom
+                # Compute advantages and normalize using percentile-based EMA
+                advantages = lambda_returns.detach() - values.detach()
+                advantages = return_normalizer(advantages)
 
                 actor_loss = compute_actor_loss(
                     log_probs=log_probs,
@@ -683,11 +773,15 @@ def main() -> None:
             epoch_actor_loss /= num_batches
             epoch_critic_loss /= num_batches
 
+            # Get normalizer stats for logging
+            norm_stats = return_normalizer.get_stats()
+
             print(
                 f"Epoch {epoch:02d}: total={epoch_loss:.6f}, pred={epoch_pred:.6f}, "
                 f"dyn={epoch_dyn:.6f}, rep={epoch_rep:.6f}, recon={epoch_recon:.6f}, "
                 f"reward={epoch_reward:.6f}, cont={epoch_continue:.6f}, "
-                f"actor={epoch_actor_loss:.6f}, critic={epoch_critic_loss:.6f}"
+                f"actor={epoch_actor_loss:.6f}, critic={epoch_critic_loss:.6f}, "
+                f"norm_scale={norm_stats['ema_scale']:.4f}"
             )
 
             if epoch % 2 == 0:
