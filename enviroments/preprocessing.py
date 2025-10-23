@@ -453,14 +453,27 @@ class MarioDreamerV3Wrapper(gym.Wrapper):
             tuple: (state, reward, done, info)
         """
         total_reward = 0
+        middle_frame_idx = (self.frame_skip - 1) // 2
+        obs = None
 
-        # Frame skip
-        for _ in range(self.frame_skip):
-            obs, reward, done, info = self.env.step(action)
+        # Frame skip - keep middle frame as observation
+        for i in range(self.frame_skip):
+            current_obs, reward, done, info = self.env.step(action)
             total_reward += reward
 
+            # Capture the middle frame
+            if i == middle_frame_idx:
+                obs = current_obs
+
             if done:
+                # If episode ends before middle frame, use the last frame
+                if obs is None:
+                    obs = current_obs
                 break
+
+        # If loop completes and obs wasn't set (shouldn't happen), use last frame
+        if obs is None:
+            obs = current_obs
 
         # Preprocess
         processed = preprocess_frame_dreamerv3(obs, self.size, self.grayscale)
