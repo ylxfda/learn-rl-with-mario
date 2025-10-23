@@ -335,52 +335,171 @@ class CNNDecoder(nn.Module):
 class GRUCell(nn.Module):
     """
     GRU cell for deterministic state h_t in RSSM.
-    
-    GRU update equations:
-        r_t = σ(W_r [h_{t-1}, x_t])           # Reset gate
-        u_t = σ(W_u [h_{t-1}, x_t])           # Update gate
-        h_tilde = tanh(W_h [r_t * h_{t-1}, x_t])  # Candidate
-        h_t = (1 - u_t) * h_{t-1} + u_t * h_tilde  # New state
-    
-    In RSSM: x_t = [z_{t-1}, a_{t-1}]
+
+    Standard GRU update equations:
+        r_t = σ(W_r [h_{t-1}, x_t] + b_r)           # Reset gate
+        u_t = σ(W_u [h_{t-1}, x_t] + b_u)           # Update gate
+        h̃_t = tanh(W_h [r_t ⊙ h_{t-1}, x_t] + b_h) # Candidate
+        h_t = (1 - u_t) ⊙ h_{t-1} + u_t ⊙ h̃_t      # New state
+
+    With update_bias trick (DreamerV3):
+        u_t = σ(W_u [h_{t-1}, x_t] + b_u + update_bias)
+
+    The update_bias (typically -1) makes the update gate more conservative,
+    encouraging the GRU to preserve long-term memory in h_t. This is crucial
+    for RSSM's deterministic state, which should maintain stable context across
+    many time steps during imagination rollouts.
+
+    Why update_bias = -1?
+    - sigmoid(x - 1) shifts the activation curve to the right
+    - Lower update gate values → more retention of old state
+    - Example: sigmoid(0) = 0.5 → sigmoid(-1) = 0.27
+    - This means: instead of updating 50%, only update 27%
+    - Result: ~2.8x longer memory retention over multiple steps
+
+    In RSSM context:
+        x_t = [z_{t-1}, a_{t-1}]  (preprocessed through Linear+LayerNorm+SiLU)
+        h_t = deterministic recurrent state (should be stable)
     """
-    
-    def __init__(self, input_dim: int, hidden_dim: int, layer_norm: bool = True):
+
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dim: int,
+        layer_norm: bool = True,
+        update_bias: float = -1.0
+    ):
         """
         Args:
             input_dim: Input dimension (e.g., stoch_size + action_size)
             hidden_dim: Hidden state dimension
-            layer_norm: Whether to use LayerNorm
+            layer_norm: Whether to use LayerNorm on gate logits (before activation)
+            update_bias: Bias added to update gate logits (default: -1.0)
+                - 0.0: Standard GRU (50% update at neutral input)
+                - -1.0: Conservative GRU (27% update at neutral input)
+                - -2.0: Very conservative (12% update at neutral input)
+                DreamerV3 uses -1.0 for better long-term memory
         """
         super().__init__()
-        
+
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
-        
-        # GRU parameters
+        self.update_bias = update_bias
+
+        # Use PyTorch's built-in GRUCell
         self.gru = nn.GRUCell(input_dim, hidden_dim)
-        
-        # Optional layer norm on output
-        self.layer_norm = nn.LayerNorm(hidden_dim) if layer_norm else None
-    
+
+        # Optional layer norm on gate logits (before activation)
+        # Applied to all 3 gates (reset, update, new) at once
+        self.layer_norm = nn.LayerNorm(3 * hidden_dim) if layer_norm else None
+
     def forward(
         self,
         x: torch.Tensor,
         h_prev: torch.Tensor
     ) -> torch.Tensor:
         """
+        Forward pass with optional update gate bias and LayerNorm on logits.
+
         Args:
             x: Input tensor, shape: (B, input_dim)
             h_prev: Previous hidden state, shape: (B, hidden_dim)
-            
+
         Returns:
             New hidden state, shape: (B, hidden_dim)
         """
-        h_next = self.gru(x, h_prev)
-        
+        # Always use manual forward pass when layer_norm or update_bias is active
+        if self.layer_norm is not None or self.update_bias != 0.0:
+            h_next = self._forward_with_bias(x, h_prev)
+        else:
+            # Only use standard GRU when both are disabled
+            h_next = self.gru(x, h_prev)
+
+        return h_next
+
+    def _forward_with_bias(self, x: torch.Tensor, h_prev: torch.Tensor) -> torch.Tensor:
+        """
+        GRU forward with LayerNorm on logits and update_bias applied to update gate.
+
+        This manually computes GRU equations to:
+        1. Apply LayerNorm to gate logits BEFORE activation (Project A's approach)
+        2. Add update_bias to the update gate
+
+        Standard GRU computation (from PyTorch source):
+            gi = W_ir @ x + b_ir  (input contributions for all gates)
+            gh = W_hr @ h + b_hr  (hidden contributions for all gates)
+
+            For reset & update gates:
+                r = σ(gi[0] + gh[0])
+                u = σ(gi[1] + gh[1])
+
+            For new gate (with reset modulation):
+                n = tanh(gi[2] + r * gh[2])
+
+            Final update:
+                h' = (1 - u) * h + u * n
+
+        Our modifications:
+            1. gates = LayerNorm(gi + gh) for reset & update  ← Apply LayerNorm to logits
+            2. u = σ(gates[1] + update_bias)  ← Add bias to update gate
+
+        Args:
+            x: Input, shape: (B, input_dim)
+            h_prev: Previous state, shape: (B, hidden_dim)
+
+        Returns:
+            New state, shape: (B, hidden_dim)
+        """
+        # Get GRU parameters
+        # PyTorch GRUCell stores weights as:
+        # weight_ih: (3 * hidden_dim, input_dim) for input transformations
+        # weight_hh: (3 * hidden_dim, hidden_dim) for hidden transformations
+        # bias_ih, bias_hh: (3 * hidden_dim,) for input and hidden biases
+
+        w_ih = self.gru.weight_ih  # (3*H, I)
+        w_hh = self.gru.weight_hh  # (3*H, H)
+        b_ih = self.gru.bias_ih    # (3*H,)
+        b_hh = self.gru.bias_hh    # (3*H,)
+
+        # Input transformation: W_i @ x + b_i
+        gi = F.linear(x, w_ih, b_ih)  # (B, 3*H)
+        # Hidden transformation: W_h @ h + b_h
+        gh = F.linear(h_prev, w_hh, b_hh)  # (B, 3*H)
+
+        # Split into three gates: [reset, update, new]
+        i_r, i_u, i_n = gi.chunk(3, dim=1)
+        h_r, h_u, h_n = gh.chunk(3, dim=1)
+
+        # Combine logits for reset and update gates
+        logits_r = i_r + h_r  # (B, H)
+        logits_u = i_u + h_u  # (B, H)
+
+        # Apply LayerNorm to gate logits BEFORE activation
+        # This normalizes the pre-activation values, stabilizing training
         if self.layer_norm is not None:
-            h_next = self.layer_norm(h_next)
-        
+            # Stack the logits to apply LayerNorm jointly
+            # This ensures the normalization statistics are computed across all gates
+            logits_combined = torch.cat([logits_r, logits_u, i_n], dim=1)  # (B, 3*H)
+            logits_combined = self.layer_norm(logits_combined)  # (B, 3*H)
+            logits_r, logits_u, i_n = logits_combined.chunk(3, dim=1)
+
+        # Reset gate: r_t = σ(logits_r)
+        reset_gate = torch.sigmoid(logits_r)
+
+        # Update gate with bias: u_t = σ(logits_u + update_bias)
+        # This is the update_bias trick!
+        update_gate = torch.sigmoid(logits_u + self.update_bias)
+
+        # New gate: n_t = tanh(i_n + reset_gate * h_n)
+        # Note: Only the input part (i_n) goes through LayerNorm
+        # The hidden part (h_n) is modulated by reset_gate as per standard GRU
+        new_gate = torch.tanh(i_n + reset_gate * h_n)
+
+        # Final state: h_t = (1 - u_t) * h_{t-1} + u_t * n_t
+        #               └───────┬────────┘         └────┬────┘
+        #                 keep old state         use new info
+        h_next = (1 - update_gate) * h_prev + update_gate * new_gate
+
         return h_next
 
 
@@ -391,7 +510,7 @@ class GRUCell(nn.Module):
 def init_weights(module: nn.Module, gain: float = 1.0):
     """
     Initialize network weights using Xavier uniform.
-    
+
     Args:
         module: PyTorch module to initialize
         gain: Scaling factor for initialization
@@ -401,8 +520,12 @@ def init_weights(module: nn.Module, gain: float = 1.0):
         if module.bias is not None:
             nn.init.zeros_(module.bias)
     elif isinstance(module, nn.GRUCell):
+        # Initialize GRU weights
         for name, param in module.named_parameters():
             if 'weight' in name:
                 nn.init.xavier_uniform_(param, gain=gain)
             elif 'bias' in name:
+                # Initialize biases to zero
+                # Note: If using update_bias in our custom GRUCell wrapper,
+                # the update gate bias will be effectively modified during forward pass
                 nn.init.zeros_(param)

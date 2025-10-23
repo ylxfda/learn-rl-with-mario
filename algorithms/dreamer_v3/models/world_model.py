@@ -114,7 +114,8 @@ class RSSM(nn.Module):
         self.sequence_model = GRUCell(
             input_dim=self.hidden_size,  # Now takes preprocessed hidden representation
             hidden_dim=self.hidden_size,
-            layer_norm=config['model']['layer_norm']
+            layer_norm=config['model']['layer_norm'],
+            update_bias=config['model']['gru_update_bias']
         )
         
         # ====================================================================

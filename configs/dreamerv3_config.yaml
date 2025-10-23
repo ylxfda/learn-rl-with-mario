@@ -9,7 +9,7 @@ env:
   grayscale: false                # Reduce input dimensionality
   resize: [64, 64]                # Smaller than Atari (84x84) for faster training
   action_repeat: 1                # Already handled by frame_skip
-  max_episode_steps: 1000         # ~66 seconds at 60 FPS with skip=4
+  max_episode_steps: 10000         # ~66 seconds at 60 FPS with skip=4
 
 # World Model Architecture (RSSM)
 model:
@@ -35,6 +35,9 @@ model:
   # Decoder
   decoder_cnn_depth: 32           # Decoder CNN channels
   decoder_mlp_layers: 4
+
+  # GRU (sequence model h) update bias trick
+  gru_update_bias: -1.0           # Enable the update bias trick. Retain more from the past.
 
 # Training hyperparameters
 training:
