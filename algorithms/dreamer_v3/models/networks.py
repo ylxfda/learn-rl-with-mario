@@ -106,17 +106,17 @@ class MLP(nn.Module):
 class CNNEncoder(nn.Module):
     """
     CNN encoder for processing images into feature vectors.
-    
+
     Architecture:
         Image (C, H, W) -> Conv blocks -> Flatten -> Feature vector
-        
+
     Each conv block:
         Conv2d(kernel=4, stride=2) -> SiLU
-        
-    With 3 blocks and input 64x64:
-        64x64 -> 32x32 -> 16x16 -> 8x8
-        
-    Final: 8x8 * channels -> flatten to vector
+
+    With 4 blocks and input 64x64:
+        64x64 -> 32x32 -> 16x16 -> 8x8 -> 4x4
+
+    Final: 4x4 * channels -> flatten to vector
     """
     
     def __init__(
@@ -169,9 +169,9 @@ class CNNEncoder(nn.Module):
         
         # Calculate output dimension
         # After num_blocks with stride 2: H -> H // (2^num_blocks)
-        # For 64x64 input with 3 blocks: 64 -> 32 -> 16 -> 8
-        # Output: (cnn_depth * 2^(num_blocks-1)) * 8 * 8
-        self.output_spatial = 8  # Assuming 64x64 input
+        # For 64x64 input with 4 blocks: 64 -> 32 -> 16 -> 8 -> 4
+        # Output: (cnn_depth * 2^(num_blocks-1)) * spatial * spatial
+        self.output_spatial = 64 // (2 ** num_blocks)  # Dynamically calculate spatial size
         self.output_channels = cnn_depth * (2 ** (num_blocks - 1))
         self.output_dim = self.output_channels * self.output_spatial * self.output_spatial
     
@@ -235,7 +235,7 @@ class CNNDecoder(nn.Module):
             cnn_depth: Base depth
             num_blocks: Number of deconv blocks
             activation: Activation function
-            initial_spatial: Initial spatial dimension (8 for 64x64 final)
+            initial_spatial: Initial spatial dimension (4 for 64x64 final with 4 blocks)
         """
         super().__init__()
         

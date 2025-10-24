@@ -20,9 +20,9 @@ model:
   
   # Encoder (CNN for images -> features)
   cnn_depth: 32                   # Base number of CNN channels
-  cnn_blocks: 3                   # Number of conv blocks
-  cnn_kernels: [4, 4, 4]          # Kernel sizes
-  cnn_strides: [2, 2, 2]          # Strides (64->32->16->8)
+  cnn_blocks: 4                   # Number of conv blocks
+  cnn_kernels: [4, 4, 4, 4]          # Kernel sizes
+  cnn_strides: [2, 2, 2, 2]          # Strides (64->32->16->8)
   
   # MLP architecture
   mlp_layers: 4                   # Depth of MLP heads

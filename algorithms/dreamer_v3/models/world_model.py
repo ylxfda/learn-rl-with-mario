@@ -143,7 +143,7 @@ class RSSM(nn.Module):
             cnn_depth=config['model']['decoder_cnn_depth'],
             num_blocks=config['model']['cnn_blocks'],
             activation=config['model']['activation'],
-            initial_spatial=8
+            initial_spatial=self.image_encoder.output_spatial  # Match encoder's output spatial size
         )
         
         # ====================================================================
