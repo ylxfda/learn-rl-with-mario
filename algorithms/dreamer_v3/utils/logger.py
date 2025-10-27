@@ -446,9 +446,93 @@ class ProgressTracker:
     def get_progress_str(self) -> str:
         """
         Get progress string.
-        
+
         Returns:
             Formatted progress string
         """
         percent = 100 * self.steps_completed / self.total_steps
         return f"{self.steps_completed}/{self.total_steps} ({percent:.1f}%) - ETA: {self.get_eta()}"
+
+
+# ============================================================================
+# Buffer Statistics
+# ============================================================================
+
+def print_buffer_statistics(episodes):
+    """
+    Compute and print comprehensive statistics about episodes in the buffer.
+
+    This function analyzes the collected episodes and displays:
+    1. Total number of episodes
+    2. Episode length statistics (max, min, median)
+    3. Max x-position statistics (max, min, median)
+    4. Total reward statistics (max, min, median)
+
+    Args:
+        episodes: List of Episode objects containing:
+            - length: Episode duration (timesteps)
+            - max_x_pos: Maximum x-position reached by Mario
+            - rewards: Tensor of rewards per timestep
+
+    Example:
+        >>> episodes = [Episode(...), Episode(...)]
+        >>> print_buffer_statistics(episodes)
+        ======================================================================
+        BUFFER STATISTICS
+        ======================================================================
+        Number of episodes:           42
+
+        Episode Length Statistics:
+          Max:                        500
+          Min:                        120
+          Median:                     285.5
+        ...
+    """
+    # Print header with visual separator
+    print("\n" + "=" * 70)
+    print("BUFFER STATISTICS")
+    print("=" * 70)
+
+    # 1. Number of episodes in the buffer
+    num_episodes = len(episodes)
+    print(f"Number of episodes:           {num_episodes}")
+
+    # 2. Episode length statistics
+    # Extract the length (number of timesteps) from each episode
+    episode_lengths = [ep.length for ep in episodes]
+    max_length = np.max(episode_lengths)
+    min_length = np.min(episode_lengths)
+    median_length = np.median(episode_lengths)
+
+    print(f"\nEpisode Length Statistics:")
+    print(f"  Max:                        {max_length}")
+    print(f"  Min:                        {min_length}")
+    print(f"  Median:                     {median_length:.1f}")
+
+    # 3. Max x-position statistics
+    # Extract the maximum x-position reached during each episode
+    # This indicates how far Mario progressed in the level
+    max_x_positions = [ep.max_x_pos for ep in episodes]
+    max_x = np.max(max_x_positions)
+    min_x = np.min(max_x_positions)
+    median_x = np.median(max_x_positions)
+
+    print(f"\nMax X Position Statistics:")
+    print(f"  Max:                        {max_x:.1f}")
+    print(f"  Min:                        {min_x:.1f}")
+    print(f"  Median:                     {median_x:.1f}")
+
+    # 4. Total reward statistics
+    # Sum up all rewards in each episode to get total episode reward
+    total_rewards = [ep.rewards.sum().item() for ep in episodes]
+    max_reward = np.max(total_rewards)
+    min_reward = np.min(total_rewards)
+    median_reward = np.median(total_rewards)
+
+    print(f"\nTotal Reward Statistics:")
+    print(f"  Max:                        {max_reward:.2f}")
+    print(f"  Min:                        {min_reward:.2f}")
+    print(f"  Median:                     {median_reward:.2f}")
+
+    # Print footer separator
+    print("=" * 70 + "\n")

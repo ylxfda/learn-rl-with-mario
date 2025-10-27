@@ -48,6 +48,7 @@ from algorithms.dreamer_v3.agent.actor_critic import (
     compute_lambda_returns,
     compute_actor_loss,
 )
+from algorithms.dreamer_v3.utils.logger import print_buffer_statistics
 
 
 # --------------------------------------------------------------------------- #
@@ -644,6 +645,9 @@ def main() -> None:
             print(f"[Collect] Collected {len(new_eps)} new episodes")
             print(f"[Collect] New Episodes Max X Position - Mean: {np.mean(new_max_x_positions):.1f}, "
                   f"Max: {np.max(new_max_x_positions):.1f}, Min: {np.min(new_max_x_positions):.1f}")
+
+        # Print comprehensive buffer statistics before converting episodes to tensors
+        print_buffer_statistics(episodes)
 
         observations, actions, rewards, continues, is_first = episodes_to_tensors(episodes)
         dataset = SequenceDataset(
