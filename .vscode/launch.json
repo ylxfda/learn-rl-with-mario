@@ -108,6 +108,31 @@
             "env": {
                 "PYTHONUNBUFFERED": "1"
             }
+        },
+        {
+            "name": "Train Autoencoder (Discrete)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/test/train_autoencoder_discrete.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--config",
+                "configs/dreamerv3_config.yaml",
+                "--frames",
+                "20000",
+                "--epochs",
+                "10",
+                "--iterations",
+                "5",
+                "--batch-size",
+                "32",
+                "--seq-len",
+                "64"
+            ],
+            "justMyCode": false,
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            }
         }
     ]
 }
