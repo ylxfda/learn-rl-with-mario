@@ -187,6 +187,7 @@ class Episode:
     rewards: torch.Tensor       # (T,)
     continues: torch.Tensor     # (T,)
     is_first: torch.Tensor      # (T,)
+    max_x_pos: float = 0.0      # Maximum x position reached in episode
 
     @property
     def length(self) -> int:
@@ -240,6 +241,7 @@ def collect_episodes(
         while total_steps < num_frames:
             obs = env.reset()
             prev_x = 0.0
+            max_x = 0.0
             delta_buffer: Deque[float] = deque(maxlen=stall_window)
             step = 0
 
@@ -286,6 +288,7 @@ def collect_episodes(
 
                 next_obs, reward, done, info = env.step(action_idx)
                 current_x = float(info.get("x_pos", 0))
+                max_x = max(max_x, current_x)
                 delta_x = current_x - prev_x
                 prev_x = current_x
                 delta_buffer.append(delta_x)
@@ -322,6 +325,7 @@ def collect_episodes(
                 rewards=torch.stack(rew_buf),
                 continues=torch.stack(cont_buf),
                 is_first=torch.tensor(first_buf, dtype=torch.bool),
+                max_x_pos=max_x,
             )
             episodes.append(episode)
             total_steps += episode.length
@@ -609,6 +613,11 @@ def main() -> None:
                 device=device,
                 explore_prob=args.explore_prob,
             )
+            # Log max x position statistics
+            max_x_positions = [ep.max_x_pos for ep in episodes]
+            print(f"[Collect] Collected {len(episodes)} episodes")
+            print(f"[Collect] Max X Position - Mean: {np.mean(max_x_positions):.1f}, "
+                  f"Max: {np.max(max_x_positions):.1f}, Min: {np.min(max_x_positions):.1f}")
         else:
             total_steps_before = sum(ep.length for ep in episodes)
             target_remove = max(1, int(total_steps_before * args.data_update_ratio))
@@ -630,6 +639,11 @@ def main() -> None:
                 explore_prob=args.explore_prob,
             )
             episodes.extend(new_eps)
+            # Log max x position statistics for new episodes
+            new_max_x_positions = [ep.max_x_pos for ep in new_eps]
+            print(f"[Collect] Collected {len(new_eps)} new episodes")
+            print(f"[Collect] New Episodes Max X Position - Mean: {np.mean(new_max_x_positions):.1f}, "
+                  f"Max: {np.max(new_max_x_positions):.1f}, Min: {np.min(new_max_x_positions):.1f}")
 
         observations, actions, rewards, continues, is_first = episodes_to_tensors(episodes)
         dataset = SequenceDataset(
