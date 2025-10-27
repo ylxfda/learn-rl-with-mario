@@ -624,7 +624,9 @@ def main() -> None:
             target_remove = max(1, int(total_steps_before * args.data_update_ratio))
             removed = 0
             while episodes and removed < target_remove:
-                removed += episodes.pop(0).length
+                # Find and remove the episode with the smallest max_x_pos
+                min_idx = min(range(len(episodes)), key=lambda i: episodes[i].max_x_pos)
+                removed += episodes.pop(min_idx).length
 
             target_add = max(1, int(total_steps_before * args.data_update_ratio))
             print(f"[Collect] Iteration {collect_iter + 1}: policy-guided rollouts with explore_prob={args.explore_prob}")
